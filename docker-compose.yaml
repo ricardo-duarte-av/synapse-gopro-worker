@@ -1,0 +1,71 @@
+# Synapse GoPro Worker.
+#
+# This is a standalone compose file for running the worker alongside an existing
+# Synapse deployment. To fold it into an existing stack instead, copy the
+# av-gopro-worker-1 service block into that file — it is written to match the
+# conventions of the Synapse worker services (unix sockets under /var/sockets,
+# the npm-nw networks, restart: unless-stopped).
+#
+# Before first start:
+#
+#   mkdir -p ./gopro/diffs
+#   cp deploy/gopro-worker.example.yaml ./gopro/gopro-worker.yaml
+#   # Match the uid the other workers run as so socket and file ownership agree:
+#   chown -R 991:991 ./gopro
+#
+# The image is built and published by .github/workflows/docker.yml.
+
+version: '2.3'
+
+services:
+  av-gopro-worker-1:
+    image: ghcr.io/ricardo-duarte-av/synapse-gopro-worker:latest
+    container_name: av-gopro-worker-1
+    restart: unless-stopped
+
+    # Run as the same uid as the Synapse workers so the listening socket is
+    # owned consistently and the diff log stays readable from the host.
+    user: "991:991"
+
+    command: ["-config", "/data/gopro-worker.yaml"]
+
+    volumes:
+      # Holds gopro-worker.yaml and the diffs/ directory. The diff log must
+      # survive restarts — a shadow soak runs for weeks — so this is a bind
+      # mount, not an anonymous volume.
+      - ./gopro:/data
+      # Shared with Synapse and nginx: we listen here, and we reach the Synapse
+      # federation readers through their sockets in the same tree.
+      - /var/sockets:/var/sockets
+
+    networks:
+      - npm-nw6
+      - npm-nw
+
+    # The runtime image is distroless, so there is no curl to probe with as the
+    # Synapse services do. The binary probes its own listener instead.
+    healthcheck:
+      test: ["CMD", "/gopro-worker", "-healthcheck", "-config", "/data/gopro-worker.yaml"]
+      start_period: "2s"
+      interval: "10s"
+      timeout: "5s"
+      retries: 3
+
+    # Prometheus scrapes metrics.addr over the compose network by container
+    # name (av-gopro-worker-1:9200), matching how the Synapse workers are
+    # scraped. Uncomment only to reach it from the host.
+    #ports:
+    #  - "9200:9200"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+networks:
+  npm-nw6:
+    external: true
+  npm-nw:
+    external: true
+    enable_ipv6: false

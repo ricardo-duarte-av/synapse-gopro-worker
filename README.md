@@ -123,7 +123,29 @@ go build ./cmd/gopro-worker
 Container images are built and published to GHCR by
 `.github/workflows/docker.yml` on every push.
 
-See `deploy/` for the container config and the nginx routing snippet.
+### With Docker
+
+```sh
+mkdir -p ./gopro/diffs
+cp deploy/gopro-worker.example.yaml ./gopro/gopro-worker.yaml
+chown -R 991:991 ./gopro          # match the uid the Synapse workers run as
+docker compose up -d
+```
+
+`docker-compose.yaml` is standalone but written to match the conventions of an
+existing Synapse stack (unix sockets under `/var/sockets`, the `npm-nw`
+networks), so the service block can be copied straight into one.
+
+Two deployment details that are easy to get wrong:
+
+- **`socket_mode` must be `0666`**, matching the existing Synapse worker
+  sockets. nginx runs in a separate container as a different uid, so the
+  `0660` default would lock it out.
+- **The healthcheck is the binary itself** (`-healthcheck`). The runtime image
+  is distroless, so there is no `curl` to probe with as the Synapse services do.
+
+See `deploy/` for the example config, the nginx routing snippet and the Grafana
+dashboard.
 
 ## Metrics
 

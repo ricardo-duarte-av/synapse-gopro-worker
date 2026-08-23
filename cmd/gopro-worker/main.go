@@ -44,6 +44,7 @@ func run() error {
 	configPath := flag.String("config", "/data/gopro-worker.yaml", "path to the configuration file")
 	showVersion := flag.Bool("version", false, "print build information and exit")
 	diffStats := flag.String("diffstats", "", "print shadow comparison statistics from the given diff log directory and exit")
+	probe := flag.Bool("healthcheck", false, "probe the running worker's /health endpoint and exit; used as the container healthcheck")
 	flag.Parse()
 
 	if *diffStats != "" {
@@ -59,6 +60,10 @@ func run() error {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
+	}
+
+	if *probe {
+		return healthcheck(cfg)
 	}
 
 	log, err := newLogger(cfg.Log)

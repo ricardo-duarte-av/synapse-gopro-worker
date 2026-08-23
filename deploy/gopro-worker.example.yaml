@@ -10,7 +10,9 @@ listen:
   # Matches the Synapse worker convention of a unix socket in the shared
   # /var/sockets/nginx volume.
   socket: /var/sockets/nginx/av-gopro-worker-1.sock
-  socket_mode: "0660"
+  # 0666 matches the existing Synapse worker sockets. nginx runs in a separate
+  # container as a different uid, so a group-only mode would lock it out.
+  socket_mode: "0666"
 
 upstream:
   # The existing Synapse federation readers. Requests are balanced round-robin.
@@ -49,6 +51,8 @@ log:
 # Inspect the accumulated evidence at any time with:
 #   gopro-worker -diffstats /data/diffs
 diff_log:
+  # Inside the container. Bind-mounted from ./gopro/diffs so a multi-week soak
+  # survives restarts and image upgrades.
   dir: /data/diffs
   # At most max_files * max_file_mb of uncompressed-equivalent history.
   max_file_mb: 64

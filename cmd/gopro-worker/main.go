@@ -22,7 +22,9 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/difflog"
 	"github.com/daedric/synapse-gopro-worker/internal/fedapi"
+	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
+	"github.com/daedric/synapse-gopro-worker/internal/shadow"
 	"github.com/daedric/synapse-gopro-worker/internal/store"
 )
 
@@ -128,8 +130,26 @@ func run() error {
 			Msg("Resumed shadow comparison statistics")
 	}
 
+	// Only built when a database is available and something is being compared.
+	var runner *shadow.Runner
+	if db != nil && cfg.NeedsDatabase() {
+		runner = shadow.NewRunner(
+			matrixstate.NewResolver(db),
+			diffs,
+			log,
+			shadow.Options{
+				Timeout:     time.Duration(cfg.Shadow.TimeoutSeconds) * time.Second,
+				Concurrency: cfg.Shadow.Concurrency,
+			},
+		)
+		log.Info().
+			Int("concurrency", cfg.Shadow.Concurrency).
+			Int("timeout_seconds", cfg.Shadow.TimeoutSeconds).
+			Msg("Shadow comparison enabled")
+	}
+
 	srv := &http.Server{
-		Handler: fedapi.New(cfg, p, log),
+		Handler: fedapi.New(cfg, p, runner, log),
 		// Federation clients are remote servers over the open internet; keep
 		// header reads bounded but allow slow large-state responses to drain.
 		ReadHeaderTimeout: 20 * time.Second,

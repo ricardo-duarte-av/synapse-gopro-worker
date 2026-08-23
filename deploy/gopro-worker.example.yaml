@@ -53,7 +53,21 @@ endpoints:
   # native      - serve our own answer, falling back to the proxy on error
   event: proxy
   state: proxy
+  # state_ids has a native implementation. Shadow mode still serves Synapse's
+  # answer; it only also computes our own and records any disagreement.
   state_ids: proxy
+
+# Tuning for shadow comparison. Only used when an endpoint is past proxy mode.
+shadow:
+  # Bounds simultaneous native computations, so comparison cannot exhaust the
+  # database pool. Comparisons beyond this are dropped, never queued: a stale
+  # comparison is worth less than a responsive worker.
+  concurrency: 4
+  timeout_seconds: 30
+  # How much of Synapse's response to keep for comparison. A large room's
+  # /state_ids response runs to several megabytes; anything past this is
+  # skipped rather than compared wrongly.
+  capture_mb: 32
 
 log:
   level: info

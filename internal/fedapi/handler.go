@@ -10,6 +10,7 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/metrics"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
+	"github.com/daedric/synapse-gopro-worker/internal/shadow"
 )
 
 // Handler serves the three federation read endpoints.
@@ -18,14 +19,24 @@ import (
 // mode already threads through so that shadow and native serving can be added
 // without reshaping the request path.
 type Handler struct {
-	cfg   *config.Config
-	proxy *proxy.Proxy
-	log   zerolog.Logger
+	cfg    *config.Config
+	proxy  *proxy.Proxy
+	shadow *shadow.Runner
+	log    zerolog.Logger
+
+	// captureLimit is how much of the proxied body to retain for comparison.
+	// A /state_ids response for a large room runs to several megabytes, so this
+	// is generous; bodies past it are not compared rather than compared wrongly.
+	captureLimit int64
 }
 
-// New builds a Handler.
-func New(cfg *config.Config, p *proxy.Proxy, log zerolog.Logger) *Handler {
-	return &Handler{cfg: cfg, proxy: p, log: log}
+// New builds a Handler. runner may be nil, in which case nothing is shadowed.
+func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.Logger) *Handler {
+	limit := int64(cfg.Shadow.CaptureMB) << 20
+	if limit <= 0 {
+		limit = 32 << 20
+	}
+	return &Handler{cfg: cfg, proxy: p, shadow: runner, log: log, captureLimit: limit}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -46,9 +57,35 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := h.modeFor(route.Endpoint)
 	start := time.Now()
 
-	// Phase 1: everything is proxied regardless of mode. Modes beyond "proxy"
-	// are accepted by config but not yet acted on.
-	res := h.proxy.Forward(w, r, 0)
+	// Shadow mode still serves Synapse's answer; it only needs the body kept
+	// so the comparison has something to check against.
+	var capture int64
+	shadowing := mode.Kind == config.ModeShadow && h.shadow != nil
+	if shadowing {
+		capture = h.captureLimit
+	}
+
+	res := h.proxy.Forward(w, r, capture)
+
+	// The client has its answer by this point; comparison happens afterwards
+	// and never delays a response.
+	if shadowing && !res.Canceled && res.Err == nil {
+		h.shadow.Go(
+			shadow.Request{
+				Endpoint: string(route.Endpoint),
+				Origin:   originFromAuth(r.Header.Get("Authorization")),
+				RoomID:   roomIDFor(route),
+				EventID:  eventIDFor(route, r),
+				URI:      r.URL.RequestURI(),
+			},
+			shadow.ProxyResult{
+				Status:    res.Status,
+				Body:      res.Body,
+				Duration:  res.Duration,
+				Truncated: res.Truncated,
+			},
+		)
+	}
 
 	endpoint := string(route.Endpoint)
 	metrics.RequestsTotal.WithLabelValues(endpoint, mode.Kind, statusLabel(res)).Inc()
@@ -91,6 +128,23 @@ func statusLabel(res proxy.Result) string {
 		return "none"
 	}
 	return strconv.Itoa(res.Status)
+}
+
+// roomIDFor returns the decoded room ID for the endpoints that take one.
+func roomIDFor(route Route) string {
+	if route.Endpoint == EndpointEvent {
+		return ""
+	}
+	return shadow.DecodeParam(route.Param)
+}
+
+// eventIDFor returns the decoded event ID, which is the path parameter for
+// /event and the required query parameter for the state endpoints.
+func eventIDFor(route Route, r *http.Request) string {
+	if route.Endpoint == EndpointEvent {
+		return shadow.DecodeParam(route.Param)
+	}
+	return r.URL.Query().Get("event_id")
 }
 
 func (h *Handler) modeFor(e Endpoint) config.Mode {

@@ -117,7 +117,7 @@ func newTestFrontend(t *testing.T, upstreamAddr string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(New(cfg, p, zerolog.Nop()))
+	srv := httptest.NewServer(New(cfg, p, nil, zerolog.Nop()))
 	t.Cleanup(srv.Close)
 	return srv.Listener.Addr().String()
 }

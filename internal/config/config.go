@@ -85,6 +85,19 @@ type Config struct {
 	Log       Log       `yaml:"log"`
 	DiffLog   DiffLog   `yaml:"diff_log"`
 	Database  Database  `yaml:"database"`
+	Shadow    Shadow    `yaml:"shadow"`
+}
+
+// Shadow tunes the comparison against Synapse.
+type Shadow struct {
+	// Concurrency bounds simultaneous native computations, so shadow work
+	// cannot exhaust the database pool. Zero uses 4.
+	Concurrency int `yaml:"concurrency"`
+	// TimeoutSeconds bounds one native computation. Zero uses 30.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+	// CaptureMB is how much of Synapse's response to keep for comparison. A
+	// large room's /state_ids response is several megabytes. Zero uses 32.
+	CaptureMB int `yaml:"capture_mb"`
 }
 
 // Database describes read-only access to Synapse's PostgreSQL database.
@@ -247,6 +260,9 @@ func (c *Config) validate() error {
 	}
 	if c.Database.MaxConns < 0 || c.Database.ConnectTimeoutSeconds < 0 {
 		return fmt.Errorf("database: values must not be negative")
+	}
+	if c.Shadow.Concurrency < 0 || c.Shadow.TimeoutSeconds < 0 || c.Shadow.CaptureMB < 0 {
+		return fmt.Errorf("shadow: values must not be negative")
 	}
 
 	for name, m := range c.Endpoints.byName() {

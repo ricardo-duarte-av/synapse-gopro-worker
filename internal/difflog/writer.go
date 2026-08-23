@@ -93,9 +93,16 @@ const (
 type Writer struct {
 	opts Options
 
-	queue  chan *Record
-	done   chan struct{}
-	closed atomic.Bool
+	queue chan *Record
+	done  chan struct{}
+
+	// queueMu guards sending on queue against closing it. A plain flag is not
+	// enough: between checking it and sending, Close could close the channel,
+	// and a send on a closed channel panics. That would crash a worker that is
+	// otherwise serving traffic correctly, on every shutdown that catches a
+	// comparison in flight.
+	queueMu sync.RWMutex
+	closed  bool
 
 	mu   sync.Mutex
 	file *os.File
@@ -175,7 +182,7 @@ func (w *Writer) openActiveLocked() error {
 // It reports whether the record was queued; a false result means the queue was
 // full and the record was dropped, which is counted in Stats.
 func (w *Writer) Log(rec *Record) bool {
-	if w == nil || w.closed.Load() || rec == nil {
+	if w == nil || rec == nil {
 		return false
 	}
 	if rec.Time.IsZero() {
@@ -183,6 +190,11 @@ func (w *Writer) Log(rec *Record) bool {
 	}
 	w.truncate(rec)
 
+	w.queueMu.RLock()
+	defer w.queueMu.RUnlock()
+	if w.closed {
+		return false
+	}
 	select {
 	case w.queue <- rec:
 		return true
@@ -401,10 +413,18 @@ func (w *Writer) Close() error {
 	if w == nil {
 		return nil
 	}
-	if w.closed.Swap(true) {
+
+	w.queueMu.Lock()
+	if w.closed {
+		w.queueMu.Unlock()
 		return nil
 	}
+	w.closed = true
+	// Safe to close here: any concurrent Log holds the read lock, so no send
+	// can be in flight.
 	close(w.queue)
+	w.queueMu.Unlock()
+
 	<-w.done
 
 	w.mu.Lock()

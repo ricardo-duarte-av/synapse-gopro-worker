@@ -433,3 +433,36 @@ func TestNilWriterIsSafe(t *testing.T) {
 		t.Errorf("Close on a nil Writer = %v, want nil", err)
 	}
 }
+
+// TestLogDuringCloseDoesNotPanic covers a shutdown race that would otherwise
+// crash the worker: Log sending on the queue at the moment Close closes it.
+// A send on a closed channel panics, and shutdown routinely catches in-flight
+// shadow comparisons.
+func TestLogDuringCloseDoesNotPanic(t *testing.T) {
+	for range 20 {
+		w, err := Open(Options{Dir: t.TempDir(), QueueSize: 4})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range 200 {
+					// Must not panic, whether or not the writer is closed.
+					w.Log(testRecord("state"))
+				}
+			}()
+		}
+
+		go func() {
+			time.Sleep(time.Millisecond)
+			_ = w.Close()
+		}()
+
+		wg.Wait()
+		_ = w.Close()
+	}
+}

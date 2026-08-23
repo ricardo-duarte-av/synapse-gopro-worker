@@ -1,0 +1,273 @@
+package shadow
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/url"
+	"time"
+
+	"github.com/rs/zerolog"
+
+	"github.com/daedric/synapse-gopro-worker/internal/difflog"
+	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
+)
+
+// Request describes the federation request being shadowed.
+type Request struct {
+	Endpoint string
+	// Origin is the server that made the request, taken from the X-Matrix
+	// header. It is NOT verified here: Synapse verified it before answering,
+	// and returning 200 proves as much. Re-verifying would duplicate remote key
+	// traffic and turn key-fetch failures into mismatches that are not logic
+	// bugs. Native serving must verify for itself.
+	Origin string
+	// RoomID and EventID are already percent-decoded.
+	RoomID  string
+	EventID string
+	URI     string
+}
+
+// ProxyResult is what Synapse answered.
+type ProxyResult struct {
+	Status   int
+	Body     []byte
+	Duration time.Duration
+	// Truncated reports that the captured body was cut short, in which case it
+	// cannot be compared.
+	Truncated bool
+}
+
+// StateIDsResolver computes native /state_ids answers.
+//
+// The Runner depends on this narrow interface rather than the concrete
+// resolver so its scheduling behaviour — dropping work when busy, surviving
+// panics, never blocking a request — can be tested without a database.
+type StateIDsResolver interface {
+	StateIDs(ctx context.Context, origin, roomID, eventID string) (*matrixstate.StateIDsResponse, error)
+}
+
+// Runner computes native answers alongside proxied ones and records
+// disagreements.
+type Runner struct {
+	resolver StateIDsResolver
+	diffs    *difflog.Writer
+	log      zerolog.Logger
+
+	// timeout bounds one native computation. Shadow work is best-effort: it
+	// must never outlive its usefulness or pile up.
+	timeout time.Duration
+	// sem bounds concurrent native computations so that shadow work cannot
+	// exhaust the database pool that real traffic will eventually depend on.
+	sem chan struct{}
+}
+
+// Options configures a Runner.
+type Options struct {
+	// Timeout bounds one native computation. Zero uses 30s.
+	Timeout time.Duration
+	// Concurrency bounds simultaneous native computations. Zero uses 4.
+	Concurrency int
+}
+
+// NewRunner builds a Runner.
+func NewRunner(resolver StateIDsResolver, diffs *difflog.Writer, log zerolog.Logger, opts Options) *Runner {
+	if opts.Timeout <= 0 {
+		opts.Timeout = 30 * time.Second
+	}
+	if opts.Concurrency <= 0 {
+		opts.Concurrency = 4
+	}
+	return &Runner{
+		resolver: resolver,
+		diffs:    diffs,
+		log:      log,
+		timeout:  opts.Timeout,
+		sem:      make(chan struct{}, opts.Concurrency),
+	}
+}
+
+// Go schedules a shadow comparison and returns immediately.
+//
+// The comparison runs after the client has already been answered, so it is
+// deliberately detached from the request context: that context is cancelled the
+// moment the handler returns. If the worker is saturated the comparison is
+// dropped rather than queued, because a stale comparison is worth less than a
+// responsive worker.
+func (r *Runner) Go(req Request, proxy ProxyResult) {
+	if r == nil {
+		return
+	}
+	select {
+	case r.sem <- struct{}{}:
+	default:
+		shadowSkipped.WithLabelValues(req.Endpoint, "busy").Inc()
+		return
+	}
+
+	go func() {
+		defer func() { <-r.sem }()
+		defer func() {
+			// A panic in shadow code must never take down a worker that is
+			// serving real traffic correctly via the proxy.
+			if p := recover(); p != nil {
+				shadowSkipped.WithLabelValues(req.Endpoint, "panic").Inc()
+				r.log.Error().Interface("panic", p).
+					Str("endpoint", req.Endpoint).Str("uri", req.URI).
+					Msg("Shadow comparison panicked")
+			}
+		}()
+		r.run(req, proxy)
+	}()
+}
+
+func (r *Runner) run(req Request, proxy ProxyResult) {
+	// Detached from the request context, which is already cancelled.
+	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
+	defer cancel()
+	ctx = r.log.WithContext(ctx)
+
+	start := time.Now()
+	nativeBody, nativeStatus, err := r.compute(ctx, req)
+	elapsed := time.Since(start)
+
+	shadowDuration.WithLabelValues(req.Endpoint).Observe(elapsed.Seconds())
+
+	if err != nil {
+		// An internal failure is a finding in its own right: it means the
+		// native path would have had to fall back to the proxy.
+		kind := difflog.KindNativeError
+		if errors.Is(err, context.DeadlineExceeded) {
+			kind = difflog.KindNativeTimeout
+		}
+		r.record(req, proxy, elapsed, &difflog.Record{
+			Kind:         kind,
+			NativeStatus: 0,
+			NativeError:  err.Error(),
+		})
+		return
+	}
+
+	agree, compareBodies := CompareStatus(proxy.Status, nativeStatus)
+	if !agree {
+		r.record(req, proxy, elapsed, &difflog.Record{
+			Kind:         difflog.KindStatus,
+			NativeStatus: nativeStatus,
+			NativeBody:   nativeBody,
+		})
+		return
+	}
+
+	if !compareBodies {
+		// Both sides returned the same non-200; nothing further to check.
+		r.match(req)
+		return
+	}
+
+	if proxy.Truncated {
+		// We cannot judge a comparison against a body we only partly captured,
+		// and guessing would corrupt the match rate that gates promotion.
+		shadowSkipped.WithLabelValues(req.Endpoint, "truncated").Inc()
+		return
+	}
+
+	diff, err := r.diff(req.Endpoint, proxy.Body, nativeBody)
+	if err != nil {
+		r.record(req, proxy, elapsed, &difflog.Record{
+			Kind:         difflog.KindNativeError,
+			NativeStatus: nativeStatus,
+			NativeError:  err.Error(),
+			NativeBody:   nativeBody,
+		})
+		return
+	}
+	if diff == nil {
+		r.match(req)
+		return
+	}
+
+	r.record(req, proxy, elapsed, &difflog.Record{
+		Kind:         difflog.KindBody,
+		NativeStatus: nativeStatus,
+		NativeBody:   nativeBody,
+		Diff:         diff,
+	})
+}
+
+// compute produces the native answer, returning the body and the status it
+// would have been served with.
+func (r *Runner) compute(ctx context.Context, req Request) ([]byte, int, error) {
+	switch req.Endpoint {
+	case "state_ids":
+		resp, err := r.resolver.StateIDs(ctx, req.Origin, req.RoomID, req.EventID)
+		if err != nil {
+			var me *matrixstate.MatrixError
+			if errors.As(err, &me) {
+				body, _ := json.Marshal(me)
+				return body, me.Status, nil
+			}
+			return nil, 0, err
+		}
+		body, err := json.Marshal(resp)
+		if err != nil {
+			return nil, 0, err
+		}
+		return body, 200, nil
+	default:
+		return nil, 0, errors.New("shadow: no native implementation for " + req.Endpoint)
+	}
+}
+
+func (r *Runner) diff(endpoint string, synapseBody, nativeBody []byte) (*difflog.Diff, error) {
+	switch endpoint {
+	case "state_ids":
+		return CompareStateIDs(synapseBody, nativeBody)
+	default:
+		return nil, errors.New("shadow: no comparator for " + endpoint)
+	}
+}
+
+func (r *Runner) match(req Request) {
+	r.diffs.Observe(req.Endpoint, true)
+	shadowResults.WithLabelValues(req.Endpoint, "match").Inc()
+}
+
+// record fills in the request-side fields and persists a disagreement.
+func (r *Runner) record(req Request, proxy ProxyResult, elapsed time.Duration, rec *difflog.Record) {
+	r.diffs.Observe(req.Endpoint, false)
+	shadowResults.WithLabelValues(req.Endpoint, string(rec.Kind)).Inc()
+
+	rec.Endpoint = req.Endpoint
+	rec.Origin = req.Origin
+	rec.URI = req.URI
+	rec.RoomID = req.RoomID
+	rec.EventID = req.EventID
+	rec.SynapseStatus = proxy.Status
+	rec.SynapseDurationMS = float64(proxy.Duration.Nanoseconds()) / 1e6
+	rec.NativeDurationMS = float64(elapsed.Nanoseconds()) / 1e6
+	if !proxy.Truncated {
+		rec.SynapseBody = proxy.Body
+	}
+
+	r.diffs.Log(rec)
+
+	r.log.Warn().
+		Str("endpoint", req.Endpoint).
+		Str("kind", string(rec.Kind)).
+		Str("room_id", req.RoomID).
+		Str("event_id", req.EventID).
+		Str("origin", req.Origin).
+		Int("synapse_status", rec.SynapseStatus).
+		Int("native_status", rec.NativeStatus).
+		Str("native_error", rec.NativeError).
+		Msg("Shadow comparison disagreed with Synapse")
+}
+
+// DecodeParam percent-decodes a path parameter, returning it unchanged if it is
+// not valid encoding.
+func DecodeParam(s string) string {
+	if decoded, err := url.PathUnescape(s); err == nil {
+		return decoded
+	}
+	return s
+}

@@ -186,16 +186,43 @@ func (r *Resolver) visibilityAt(ctx context.Context, ev *store.Event, targetServ
 }
 
 // redactEvent strips an event to the fields the room version preserves.
+//
+// Room versions 1 and 2 use a different event format: auth_events and
+// prev_events are arrays of [event_id, hashes] pairs rather than plain event
+// IDs, so they need mautrix's RoomV1PDU. Decoding one of those into the modern
+// PDU type fails outright. These rooms are rare -- 9 of 1165 on the deployment
+// this was written against -- but they federate like any other.
 func redactEvent(ev *store.Event) ([]byte, error) {
-	var p pdu.PDU
-	if err := json.Unmarshal(ev.JSON, &p); err != nil {
-		return nil, err
-	}
 	roomVersion := id.RoomVersion(ev.RoomVersion)
 	if roomVersion == "" {
+		// A missing room version means the original, which is format v1.
 		roomVersion = id.RoomV1
 	}
+
+	if usesV1EventFormat(roomVersion) {
+		var p pdu.RoomV1PDU
+		if err := json.Unmarshal(ev.JSON, &p); err != nil {
+			return nil, fmt.Errorf("parse v1 pdu: %w", err)
+		}
+		return json.Marshal(p.Redact(roomVersion))
+	}
+
+	var p pdu.PDU
+	if err := json.Unmarshal(ev.JSON, &p); err != nil {
+		return nil, fmt.Errorf("parse pdu: %w", err)
+	}
 	return json.Marshal(p.Redact(roomVersion))
+}
+
+// usesV1EventFormat reports whether a room version uses the original event
+// format. It mirrors RoomV1PDU.SupportsRoomVersion.
+func usesV1EventFormat(roomVersion id.RoomVersion) bool {
+	switch roomVersion {
+	case id.RoomV0, id.RoomV1, id.RoomV2:
+		return true
+	default:
+		return false
+	}
 }
 
 // applyPDUJSONRules performs the two transformations Synapse applies when

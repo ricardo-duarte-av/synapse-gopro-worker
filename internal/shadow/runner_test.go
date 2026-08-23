@@ -43,7 +43,7 @@ func newTestRunner(t *testing.T, r StateIDsResolver, opts Options) (*Runner, *di
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	return NewRunner(r, w, zerolog.Nop(), opts), w
+	return NewRunner(r, nil, w, zerolog.Nop(), opts), w
 }
 
 func req() Request {

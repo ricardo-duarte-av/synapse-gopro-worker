@@ -25,6 +25,11 @@ const (
 	KindNativeError Kind = "native_error"
 	// KindNativeTimeout means the native implementation exceeded its budget.
 	KindNativeTimeout Kind = "native_timeout"
+	// KindAuth means our X-Matrix verification verdict disagreed with
+	// Synapse's. This is tracked separately from response differences: it
+	// gates native serving independently, since accepting a request Synapse
+	// would reject is a security failure rather than a wrong answer.
+	KindAuth Kind = "auth_mismatch"
 )
 
 // Record is one logged disagreement, serialised as a single JSON line.

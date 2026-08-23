@@ -86,6 +86,21 @@ type Config struct {
 	DiffLog   DiffLog   `yaml:"diff_log"`
 	Database  Database  `yaml:"database"`
 	Shadow    Shadow    `yaml:"shadow"`
+	Auth      Auth      `yaml:"auth"`
+}
+
+// Auth tunes X-Matrix request verification.
+//
+// No signing key is needed: verifying an incoming request uses the *remote*
+// server's published keys, fetched over unauthenticated federation. This worker
+// never handles the homeserver's private key.
+type Auth struct {
+	// KeyRefetchMinutes is the minimum delay before re-querying a server whose
+	// key fetch failed, so an unreachable server cannot become a stream of
+	// outbound requests. Zero uses 60.
+	KeyRefetchMinutes int `yaml:"key_refetch_minutes"`
+	// TimeoutSeconds bounds a key fetch. Zero uses 30.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // Shadow tunes the comparison against Synapse.
@@ -263,6 +278,9 @@ func (c *Config) validate() error {
 	}
 	if c.Shadow.Concurrency < 0 || c.Shadow.TimeoutSeconds < 0 || c.Shadow.CaptureMB < 0 {
 		return fmt.Errorf("shadow: values must not be negative")
+	}
+	if c.Auth.KeyRefetchMinutes < 0 || c.Auth.TimeoutSeconds < 0 {
+		return fmt.Errorf("auth: values must not be negative")
 	}
 
 	for name, m := range c.Endpoints.byName() {

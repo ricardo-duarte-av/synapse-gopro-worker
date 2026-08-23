@@ -77,6 +77,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				RoomID:   roomIDFor(route),
 				EventID:  eventIDFor(route, r),
 				URI:      r.URL.RequestURI(),
+				Method:   r.Method,
+				// Kept so verification can be replayed off the request path.
+				AuthHeader: r.Header.Get("Authorization"),
 			},
 			shadow.ProxyResult{
 				Status:    res.Status,

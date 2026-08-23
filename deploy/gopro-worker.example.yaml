@@ -57,6 +57,23 @@ endpoints:
   # answer; it only also computes our own and records any disagreement.
   state_ids: proxy
 
+# X-Matrix request verification.
+#
+# No signing key is configured, and none is needed: verifying an incoming
+# request uses the *remote* server's published keys, which are fetched over
+# unauthenticated federation. This worker never handles the homeserver's private
+# signing key, so do not mount it.
+#
+# While shadowing, verification runs off the request path and its verdict is
+# only compared against Synapse's, never acted on. Watch
+# gopro_auth_verdicts_total: "we_accept_synapse_rejects" is the dangerous
+# direction and must be zero before any endpoint is served natively.
+auth:
+  # Minimum delay before re-querying a server whose key fetch failed, so an
+  # unreachable server cannot become a stream of outbound requests.
+  key_refetch_minutes: 60
+  timeout_seconds: 30
+
 # Tuning for shadow comparison. Only used when an endpoint is past proxy mode.
 shadow:
   # Bounds simultaneous native computations, so comparison cannot exhaust the

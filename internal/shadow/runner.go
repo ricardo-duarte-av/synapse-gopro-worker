@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/rs/zerolog"
 
 	"github.com/daedric/synapse-gopro-worker/internal/difflog"
+	"github.com/daedric/synapse-gopro-worker/internal/fedauth"
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
 )
 
@@ -26,6 +28,11 @@ type Request struct {
 	RoomID  string
 	EventID string
 	URI     string
+	// Method and AuthHeader let verification be replayed off the request path.
+	// Verification fetches the origin server's keys over the network, so doing
+	// it inline would delay the response we are supposed to be observing.
+	Method     string
+	AuthHeader string
 }
 
 // ProxyResult is what Synapse answered.
@@ -51,6 +58,7 @@ type StateIDsResolver interface {
 // disagreements.
 type Runner struct {
 	resolver StateIDsResolver
+	verifier *fedauth.Verifier
 	diffs    *difflog.Writer
 	log      zerolog.Logger
 
@@ -70,8 +78,9 @@ type Options struct {
 	Concurrency int
 }
 
-// NewRunner builds a Runner.
-func NewRunner(resolver StateIDsResolver, diffs *difflog.Writer, log zerolog.Logger, opts Options) *Runner {
+// NewRunner builds a Runner. verifier may be nil, in which case X-Matrix
+// verification is not exercised.
+func NewRunner(resolver StateIDsResolver, verifier *fedauth.Verifier, diffs *difflog.Writer, log zerolog.Logger, opts Options) *Runner {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 30 * time.Second
 	}
@@ -80,6 +89,7 @@ func NewRunner(resolver StateIDsResolver, diffs *difflog.Writer, log zerolog.Log
 	}
 	return &Runner{
 		resolver: resolver,
+		verifier: verifier,
 		diffs:    diffs,
 		log:      log,
 		timeout:  opts.Timeout,
@@ -127,8 +137,13 @@ func (r *Runner) run(req Request, proxy ProxyResult) {
 	defer cancel()
 	ctx = r.log.WithContext(ctx)
 
+	// Exercise verification before computing, so the auth layer accumulates
+	// evidence at the same time as the state logic. Its verdict is recorded
+	// separately and does not affect the state match rate.
+	origin := r.verifyOrigin(req, proxy)
+
 	start := time.Now()
-	nativeBody, nativeStatus, err := r.compute(ctx, req)
+	nativeBody, nativeStatus, err := r.compute(ctx, req, origin)
 	elapsed := time.Since(start)
 
 	shadowDuration.WithLabelValues(req.Endpoint).Observe(elapsed.Seconds())
@@ -196,10 +211,101 @@ func (r *Runner) run(req Request, proxy ProxyResult) {
 
 // compute produces the native answer, returning the body and the status it
 // would have been served with.
-func (r *Runner) compute(ctx context.Context, req Request) ([]byte, int, error) {
+// verifyOrigin exercises X-Matrix verification and reports whether our verdict
+// agrees with Synapse's, returning the origin to compute with.
+//
+// While shadowing, Synapse's answer is what gets served, so a disagreement here
+// is evidence rather than an outage. It is nonetheless the gate on native
+// serving: accepting a request Synapse would have rejected is a security
+// failure, not merely a wrong answer.
+func (r *Runner) verifyOrigin(req Request, proxy ProxyResult) string {
+	if r.verifier == nil {
+		return req.Origin
+	}
+
+	synth, err := synthesiseRequest(req)
+	if err != nil {
+		authVerdicts.WithLabelValues("replay_failed").Inc()
+		return req.Origin
+	}
+
+	result := r.verifier.Verify(synth)
+	synapseAccepted := proxy.Status != http.StatusUnauthorized && proxy.Status != http.StatusForbidden
+
+	switch {
+	case result.OK() && proxy.Status == http.StatusUnauthorized:
+		// We would have accepted what Synapse rejected. This is the dangerous
+		// direction and must block promotion.
+		authVerdicts.WithLabelValues("we_accept_synapse_rejects").Inc()
+		r.logAuthMismatch(req, proxy, result.Origin, "", "we accepted a request Synapse rejected")
+	case !result.OK() && synapseAccepted:
+		// We would have rejected legitimate traffic.
+		authVerdicts.WithLabelValues("we_reject_synapse_accepts").Inc()
+		r.logAuthMismatch(req, proxy, "", result.Err.Err, "we rejected a request Synapse accepted")
+	case result.OK():
+		authVerdicts.WithLabelValues("agree_accept").Inc()
+	default:
+		authVerdicts.WithLabelValues("agree_reject").Inc()
+	}
+
+	if result.OK() {
+		return result.Origin
+	}
+	return req.Origin
+}
+
+// synthesiseRequest rebuilds enough of the original request to verify its
+// signature. The signature covers the method, the exact request URI and the
+// body, and these endpoints are all GET with no body.
+func synthesiseRequest(req Request) (*http.Request, error) {
+	u, err := url.ParseRequestURI(req.URI)
+	if err != nil {
+		return nil, err
+	}
+	method := req.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	out := &http.Request{
+		Method: method,
+		URL:    u,
+		Header: http.Header{},
+		Body:   http.NoBody,
+	}
+	if req.AuthHeader != "" {
+		out.Header.Set("Authorization", req.AuthHeader)
+	}
+	return out.WithContext(context.Background()), nil
+}
+
+func (r *Runner) logAuthMismatch(req Request, proxy ProxyResult, verifiedOrigin, authErr, why string) {
+	r.log.Warn().
+		Str("endpoint", req.Endpoint).
+		Str("claimed_origin", req.Origin).
+		Str("verified_origin", verifiedOrigin).
+		Str("auth_error", authErr).
+		Int("synapse_status", proxy.Status).
+		Str("uri", req.URI).
+		Msg("X-Matrix verification disagreed with Synapse: " + why)
+
+	// Logged for inspection, but deliberately not passed to Observe: auth
+	// agreement is its own gate and must not move the state match rate.
+	r.diffs.Log(&difflog.Record{
+		Kind:          difflog.KindAuth,
+		Endpoint:      req.Endpoint,
+		Origin:        req.Origin,
+		URI:           req.URI,
+		RoomID:        req.RoomID,
+		EventID:       req.EventID,
+		SynapseStatus: proxy.Status,
+		NativeError:   why + ": " + authErr,
+	})
+}
+
+func (r *Runner) compute(ctx context.Context, req Request, origin string) ([]byte, int, error) {
 	switch req.Endpoint {
 	case "state_ids":
-		resp, err := r.resolver.StateIDs(ctx, req.Origin, req.RoomID, req.EventID)
+		resp, err := r.resolver.StateIDs(ctx, origin, req.RoomID, req.EventID)
 		if err != nil {
 			var me *matrixstate.MatrixError
 			if errors.As(err, &me) {

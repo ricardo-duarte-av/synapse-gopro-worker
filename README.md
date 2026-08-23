@@ -86,6 +86,28 @@ The diff itself is expressed per response field as which event IDs each side
 has that the other does not. `extra_in_native` is the dangerous direction: it
 means we may be returning data Synapse would have withheld.
 
+## Request authentication
+
+Incoming requests are authenticated with `mautrix-go`'s
+`federation.ServerAuth`, which parses the `X-Matrix` header, fetches and caches
+the origin server's published keys, and checks the ed25519 signature over the
+canonical JSON of the request. None of that is reimplemented here: each part is
+somewhere a subtle mistake is a security hole rather than a bug.
+
+**No private key is required.** Verifying an incoming request needs only the
+*remote* server's public keys, fetched over unauthenticated federation, so the
+homeserver's signing key is never mounted into this worker.
+
+The signature covers the request URI, so a signature obtained legitimately for
+one room cannot be replayed against another. That property is what the tests in
+`internal/fedauth` actually check — a genuine signature is accepted, and
+altering the room, the event, the query string or the method all reject.
+
+While an endpoint is in shadow mode, verification runs off the request path
+(a key fetch must never delay a response) and its verdict is only compared with
+Synapse's. `gopro_auth_verdicts_total{result="we_accept_synapse_rejects"}` is
+the dangerous direction and must be zero before anything is served natively.
+
 ## Layout
 
 ```
@@ -93,6 +115,10 @@ cmd/gopro-worker/     entry point
 internal/config/      configuration and serving modes
 internal/proxy/       URI-preserving reverse proxy
 internal/fedapi/      routing and request handling
+internal/fedauth/     X-Matrix request verification
+internal/matrixstate/ server ACLs and state-at-an-event
+internal/shadow/      comparison against Synapse
+internal/store/       read-only PostgreSQL access
 internal/difflog/     shadow diff log, rotation, persistent stats, metrics
 internal/metrics/     Prometheus instrumentation
 deploy/               example config, nginx snippet, Grafana dashboard

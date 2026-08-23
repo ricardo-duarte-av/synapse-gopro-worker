@@ -22,6 +22,7 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/difflog"
 	"github.com/daedric/synapse-gopro-worker/internal/fedapi"
+	"github.com/daedric/synapse-gopro-worker/internal/fedauth"
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
 	"github.com/daedric/synapse-gopro-worker/internal/shadow"
@@ -135,6 +136,10 @@ func run() error {
 	if db != nil && cfg.NeedsDatabase() {
 		runner = shadow.NewRunner(
 			matrixstate.NewResolver(db),
+			fedauth.New(cfg.ServerName, fedauth.Options{
+				KeyRefetchDelay: time.Duration(cfg.Auth.KeyRefetchMinutes) * time.Minute,
+				Timeout:         time.Duration(cfg.Auth.TimeoutSeconds) * time.Second,
+			}),
 			diffs,
 			log,
 			shadow.Options{

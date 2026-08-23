@@ -23,6 +23,15 @@ var (
 		Help:      "Shadow comparisons skipped, by endpoint and reason.",
 	}, []string{"endpoint", "reason"})
 
+	// authVerdicts compares our X-Matrix verification against Synapse's.
+	// "we_accept_synapse_rejects" is the dangerous direction and must be zero
+	// before any endpoint is served natively.
+	authVerdicts = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "gopro",
+		Name:      "auth_verdicts_total",
+		Help:      "X-Matrix verification verdicts compared against Synapse's.",
+	}, []string{"result"})
+
 	// shadowDuration is how long the native implementation took. Compared with
 	// gopro_upstream_duration_seconds, this is the whole point of the project.
 	shadowDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{

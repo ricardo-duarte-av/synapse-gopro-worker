@@ -74,6 +74,24 @@ auth:
   key_refetch_minutes: 60
   timeout_seconds: 30
 
+  # Notary servers, queried before falling back to fetching a server's keys
+  # from itself. These MUST match Synapse's trusted_key_servers in
+  # homeserver.yaml: if the two lists diverge, a server Synapse can verify
+  # through a notary would be rejected here, and legitimate federation breaks.
+  #
+  # Keys are resolved in Synapse's order -- Synapse's own cached keys
+  # (server_keys_json, read-only), then these notaries, then the origin server
+  # directly. A hostile notary cannot forge keys: the relayed response carries
+  # the origin's own signature over its key list, which is verified before the
+  # keys are trusted.
+  trusted_key_servers:
+    - matrix.org
+    - maunium.net
+    - t2bot.io
+    - element.io
+    - beeper.com
+    - keys.aguiarvieira.pt
+
 # Tuning for shadow comparison. Only used when an endpoint is past proxy mode.
 shadow:
   # Bounds simultaneous native computations, so comparison cannot exhaust the

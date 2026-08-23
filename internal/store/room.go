@@ -127,3 +127,45 @@ func (s *Store) GetCurrentStateEventJSON(ctx context.Context, roomID, evType, st
 	}
 	return raw, nil
 }
+
+// ServerKeyJSON is a cached published key response for a remote server, as
+// Synapse stores it in server_keys_json.
+type ServerKeyJSON struct {
+	KeyID        string
+	FromServer   string
+	ValidUntilMS int64
+	JSON         []byte
+}
+
+// GetServerKeys returns Synapse's cached key responses for a server that are
+// still within their validity window, newest first.
+//
+// This is Synapse's own first-tier key fetcher. Reading it means we resolve
+// keys from exactly the data Synapse resolves them from, with no network
+// traffic and no cold start after a restart.
+func (s *Store) GetServerKeys(ctx context.Context, serverName string, validAtMS int64) ([]ServerKeyJSON, error) {
+	const q = `
+		SELECT key_id, from_server, ts_valid_until_ms, key_json
+		FROM server_keys_json
+		WHERE server_name = $1 AND ts_valid_until_ms > $2
+		ORDER BY ts_valid_until_ms DESC`
+
+	rows, err := s.pool.Query(ctx, q, serverName, validAtMS)
+	if err != nil {
+		return nil, fmt.Errorf("store: get server keys: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ServerKeyJSON
+	for rows.Next() {
+		var k ServerKeyJSON
+		if err := rows.Scan(&k.KeyID, &k.FromServer, &k.ValidUntilMS, &k.JSON); err != nil {
+			return nil, fmt.Errorf("store: scan server key: %w", err)
+		}
+		out = append(out, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: server key rows: %w", err)
+	}
+	return out, nil
+}

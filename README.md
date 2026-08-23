@@ -103,6 +103,22 @@ one room cannot be replayed against another. That property is what the tests in
 `internal/fedauth` actually check — a genuine signature is accepted, and
 altering the room, the event, the query string or the method all reject.
 
+Published keys are resolved in the same order Synapse uses:
+
+1. **Synapse's own cache** — the `server_keys_json` table, read-only. This is
+   why the tier is nearly free: that table already holds keys for tens of
+   thousands of servers, so a restart does not start cold and no extra
+   federation traffic is generated for a server Synapse has already seen.
+2. **Notaries** — `auth.trusted_key_servers`, which must match Synapse's
+   `trusted_key_servers`. A notary can answer for an origin that is unreachable
+   right now, which a direct fetch cannot; without this, a briefly-down server
+   would have its legitimate requests rejected even though Synapse accepts them.
+3. **The origin server directly**, as a last resort.
+
+A hostile notary cannot forge keys. The response it relays carries the origin
+server's own signature over its key list, and that self-signature is verified
+before anything is trusted — for cached and notary-supplied keys alike.
+
 While an endpoint is in shadow mode, verification runs off the request path
 (a key fetch must never delay a response) and its verdict is only compared with
 Synapse's. `gopro_auth_verdicts_total{result="we_accept_synapse_rejects"}` is

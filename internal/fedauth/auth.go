@@ -15,15 +15,21 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/rs/zerolog"
 	"go.mau.fi/util/exhttp"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/federation"
+
+	"github.com/daedric/synapse-gopro-worker/internal/store"
 )
 
 // Verifier authenticates incoming federation requests.
 type Verifier struct {
 	auth       *federation.ServerAuth
 	serverName string
+	// notaries are the trusted key servers queried before falling back to a
+	// direct fetch, mirroring Synapse's trusted_key_servers.
+	notaries []string
 }
 
 // Options tunes key fetching.
@@ -34,6 +40,16 @@ type Options struct {
 	KeyRefetchDelay time.Duration
 	// Timeout bounds a key fetch. Zero uses 30s.
 	Timeout time.Duration
+	// Notaries are trusted key servers, queried before a direct fetch. Copy
+	// these from Synapse's trusted_key_servers so both resolve keys the same
+	// way; without them a server that is momentarily unreachable cannot be
+	// verified even though Synapse can verify it.
+	Notaries []string
+	// DB is Synapse's database, read only, used to reuse its cached keys.
+	// Optional; without it every unknown server needs a network fetch.
+	DB *store.Store
+	// Log is used for cache and notary diagnostics.
+	Log zerolog.Logger
 }
 
 // New builds a Verifier for the given homeserver name.
@@ -45,15 +61,16 @@ func New(serverName string, opts Options) *Verifier {
 		opts.Timeout = 30 * time.Second
 	}
 
-	cache := federation.NewInMemoryCache()
-	cache.MinKeyRefetchDelay = opts.KeyRefetchDelay
+	cache := newLayeredCache(opts.DB, opts.KeyRefetchDelay, opts.Log)
 
 	settings := exhttp.SensibleClientSettings
 	settings.GlobalTimeout = opts.Timeout
 
 	// No signing key: this client only fetches published keys, which is an
 	// unauthenticated federation request.
-	client := federation.NewClient(serverName, nil, cache, settings)
+	// The resolution cache (well-known and SRV lookups) is separate from the
+	// key cache; only the latter is layered over Synapse's.
+	client := federation.NewClient(serverName, nil, cache.mem, settings)
 
 	auth := federation.NewServerAuth(client, cache, func(federation.XMatrixAuth) string {
 		// This worker serves exactly one homeserver, so the only acceptable
@@ -64,7 +81,7 @@ func New(serverName string, opts Options) *Verifier {
 	// These endpoints are all GET with no body; nothing legitimate is large.
 	auth.MaxBodySize = 64 * 1024
 
-	return &Verifier{auth: auth, serverName: serverName}
+	return &Verifier{auth: auth, serverName: serverName, notaries: opts.Notaries}
 }
 
 // Result describes the outcome of verifying a request.
@@ -104,6 +121,10 @@ func (v *Verifier) Verify(r *http.Request) Result {
 		r = r.Clone(r.Context())
 		r.Body = http.NoBody
 	}
+
+	// Try the cheap key sources first. mautrix falls back to fetching from the
+	// origin server directly, which is the last resort in Synapse's order too.
+	v.warmCache(r.Context(), r.Header.Get("Authorization"))
 
 	modified, respErr := v.auth.Authenticate(r)
 	if respErr != nil {

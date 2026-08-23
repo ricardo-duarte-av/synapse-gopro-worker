@@ -139,6 +139,9 @@ func run() error {
 			fedauth.New(cfg.ServerName, fedauth.Options{
 				KeyRefetchDelay: time.Duration(cfg.Auth.KeyRefetchMinutes) * time.Minute,
 				Timeout:         time.Duration(cfg.Auth.TimeoutSeconds) * time.Second,
+				Notaries:        cfg.Auth.TrustedKeyServers,
+				DB:              db,
+				Log:             log,
 			}),
 			diffs,
 			log,

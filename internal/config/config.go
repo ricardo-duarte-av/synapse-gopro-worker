@@ -101,6 +101,11 @@ type Auth struct {
 	KeyRefetchMinutes int `yaml:"key_refetch_minutes"`
 	// TimeoutSeconds bounds a key fetch. Zero uses 30.
 	TimeoutSeconds int `yaml:"timeout_seconds"`
+	// TrustedKeyServers are notary servers queried before falling back to
+	// fetching a server's keys from itself. Copy these from Synapse's
+	// trusted_key_servers: if the two disagree, a server Synapse can verify
+	// through a notary would be rejected here.
+	TrustedKeyServers []string `yaml:"trusted_key_servers"`
 }
 
 // Shadow tunes the comparison against Synapse.

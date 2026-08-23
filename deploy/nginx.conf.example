@@ -1,0 +1,30 @@
+# Route the three read-only federation endpoints to the GoPro worker.
+#
+# Place these locations *before* the generic /_matrix/federation/ block that
+# routes to the Synapse federation readers, so they take precedence. Everything
+# else continues to reach Synapse untouched.
+#
+# The regexes mirror Synapse's servlet paths, including its optional trailing
+# slash.
+
+upstream gopro_worker {
+    server unix:/var/sockets/nginx/av-gopro-worker-1.sock;
+}
+
+# In a server { } block:
+#
+#   location ~ ^/_matrix/federation/v1/(event|state|state_ids)/ {
+#       proxy_pass http://gopro_worker;
+#
+#       # Critical: do not let nginx rewrite the URI. The X-Matrix signature
+#       # covers the request URI, and room/event IDs are percent-encoded in the
+#       # path. A proxy_pass with no URI component (as above) passes the
+#       # original request URI through unchanged -- do not append a path.
+#       proxy_http_version 1.1;
+#       proxy_set_header Host $host;
+#       proxy_set_header Connection "";
+#
+#       # /state on a large room can be slow and large.
+#       proxy_read_timeout 120s;
+#       proxy_buffering off;
+#   }

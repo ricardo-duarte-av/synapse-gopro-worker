@@ -1,0 +1,194 @@
+// Command gopro-worker serves the read-only Matrix federation endpoints
+// /event, /state and /state_ids.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"runtime"
+	"syscall"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
+
+	"github.com/daedric/synapse-gopro-worker/internal/config"
+	"github.com/daedric/synapse-gopro-worker/internal/difflog"
+	"github.com/daedric/synapse-gopro-worker/internal/fedapi"
+	"github.com/daedric/synapse-gopro-worker/internal/proxy"
+)
+
+// Build information, stamped by the Docker build via -ldflags. The defaults
+// apply to a plain "go build".
+var (
+	tag       = "dev"
+	commit    = "unknown"
+	buildTime = "unknown"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "gopro-worker: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	configPath := flag.String("config", "/data/gopro-worker.yaml", "path to the configuration file")
+	showVersion := flag.Bool("version", false, "print build information and exit")
+	diffStats := flag.String("diffstats", "", "print shadow comparison statistics from the given diff log directory and exit")
+	flag.Parse()
+
+	if *diffStats != "" {
+		return difflog.ReportToStdout(*diffStats)
+	}
+
+	if *showVersion {
+		fmt.Printf("gopro-worker %s (commit %s, built %s, %s)\n",
+			tag, commit, buildTime, runtime.Version())
+		return nil
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+
+	log, err := newLogger(cfg.Log)
+	if err != nil {
+		return err
+	}
+
+	p, err := proxy.New(cfg.Upstream, log)
+	if err != nil {
+		return err
+	}
+
+	// A nil Writer is a valid no-op, which is what proxy-only mode gets.
+	diffs, err := difflog.OpenFromConfig(cfg.DiffLog)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := diffs.Close(); err != nil {
+			log.Err(err).Msg("Failed to close the diff log")
+		}
+	}()
+	if err := difflog.Register(prometheus.DefaultRegisterer, diffs); err != nil {
+		return fmt.Errorf("register diff log metrics: %w", err)
+	}
+
+	listener, err := listen(cfg.Listen)
+	if err != nil {
+		return err
+	}
+
+	log.Info().
+		Str("server_name", cfg.ServerName).
+		Strs("upstreams", p.Backends()).
+		Str("event", cfg.Endpoints.Event.String()).
+		Str("state", cfg.Endpoints.State.String()).
+		Str("state_ids", cfg.Endpoints.StateIDs.String()).
+		Str("diff_log", cfg.DiffLog.Dir).
+		Str("version", tag).
+		Msg("Starting gopro-worker")
+
+	if diffs != nil {
+		s := diffs.Snapshot()
+		log.Info().
+			Uint64("compared", s.Compared).
+			Uint64("mismatched", s.Mismatched).
+			Int("restarts", s.Restarts).
+			Time("since", s.Since).
+			Msg("Resumed shadow comparison statistics")
+	}
+
+	srv := &http.Server{
+		Handler: fedapi.New(cfg, p, log),
+		// Federation clients are remote servers over the open internet; keep
+		// header reads bounded but allow slow large-state responses to drain.
+		ReadHeaderTimeout: 20 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ErrorLog:          nil,
+	}
+
+	metricsSrv := &http.Server{
+		Addr:              cfg.Metrics.Addr,
+		Handler:           promhttp.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errs := make(chan error, 2)
+	go func() {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- fmt.Errorf("federation listener: %w", err)
+		}
+	}()
+	go func() {
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- fmt.Errorf("metrics listener: %w", err)
+		}
+	}()
+
+	select {
+	case err := <-errs:
+		return err
+	case <-ctx.Done():
+		log.Info().Msg("Shutting down")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = metricsSrv.Shutdown(shutdownCtx)
+	return srv.Shutdown(shutdownCtx)
+}
+
+func newLogger(cfg config.Log) (zerolog.Logger, error) {
+	level, err := zerolog.ParseLevel(cfg.Level)
+	if err != nil {
+		return zerolog.Nop(), fmt.Errorf("log: %w", err)
+	}
+	var w = os.Stdout
+	logger := zerolog.New(w).Level(level).With().Timestamp().Logger()
+	if cfg.Pretty {
+		logger = logger.Output(zerolog.ConsoleWriter{Out: w, TimeFormat: time.RFC3339})
+	}
+	return logger, nil
+}
+
+// listen opens the configured listener. For unix sockets it removes a stale
+// socket left by an unclean shutdown and applies the configured permissions so
+// nginx can connect.
+func listen(cfg config.Listen) (net.Listener, error) {
+	if cfg.Addr != "" {
+		return net.Listen("tcp", cfg.Addr)
+	}
+
+	if err := os.Remove(cfg.Socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("remove stale socket %s: %w", cfg.Socket, err)
+	}
+	l, err := net.Listen("unix", cfg.Socket)
+	if err != nil {
+		return nil, err
+	}
+	mode, err := cfg.ParsedSocketMode()
+	if err != nil {
+		_ = l.Close()
+		return nil, err
+	}
+	if err := os.Chmod(cfg.Socket, mode); err != nil {
+		_ = l.Close()
+		return nil, fmt.Errorf("chmod socket: %w", err)
+	}
+	return l, nil
+}

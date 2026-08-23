@@ -1,1 +1,152 @@
-# synapse-gopro-worker
+# Synapse GoPro Worker
+
+A Go implementation of the read-only Matrix federation endpoints that Synapse
+Pro's closed-source Rust worker serves:
+
+- `GET /_matrix/federation/v1/event/{eventId}`
+- `GET /_matrix/federation/v1/state/{roomId}?event_id=…`
+- `GET /_matrix/federation/v1/state_ids/{roomId}?event_id=…`
+
+These are pure PostgreSQL reads. The goal is one process that scales with
+goroutines and a shared cache, in place of N static Python workers each with its
+own heap and its own cold caches.
+
+## Approach: never guess, always compare
+
+Federation is unforgiving. A wrong canonical JSON serialisation or a missed
+history-visibility check produces subtle breakage with remote servers, or leaks
+private room history. So the worker is built in stages that are safe by
+construction:
+
+| Mode | Behaviour |
+| --- | --- |
+| `proxy` | Forward to a real Synapse worker, return its answer verbatim. |
+| `shadow` | Serve Synapse's answer, but also compute our own and diff the two. |
+| `canary:N` | Serve our own answer for N% of requests, falling back on error. |
+| `native` | Serve our own answer, with the proxy retained as a fallback. |
+
+The mode is set per endpoint, so `/state_ids` can go native while `/event` — by
+far the riskiest, since it is the one that applies history-visibility filtering —
+stays proxied.
+
+**Status: Phase 1 complete.** Every request is proxied. The mode field is parsed
+and plumbed through but not yet acted on.
+
+## Why this is tractable
+
+[mautrix-go](https://github.com/mautrix/go)'s `federation` package already
+implements the parts that are genuinely hard to get right, so this project does
+not reimplement any cryptography:
+
+| Need | Provided by |
+| --- | --- |
+| Parse and verify `X-Matrix` headers | `federation.ServerAuth.Authenticate` |
+| Remote server key fetch and cache | `federation.ServerAuth.GetKeysWithCache` |
+| Read Synapse's `signing.key` file | `federation.ParseSynapseKey` |
+| Per-room-version redaction | `federation/pdu.Redact` |
+| Event ID and reference hashes | `federation/pdu.GetEventID` |
+
+## Shadow diff log
+
+Shadow mode runs for weeks before an endpoint is promoted, so the evidence has
+to be durable and bounded. Disagreements are written as JSON Lines to a rotating
+file set under `diff_log.dir`, and cumulative counters are checkpointed to
+`stats.json` — unlike Prometheus counters, these survive restarts, which matters
+when the promotion gate is phrased as "seven days at 100% agreement".
+
+```sh
+gopro-worker -diffstats /data/diffs
+```
+
+```
+Shadow comparison since 2026-08-01T09:14:22Z (7.4d, 3 restarts)
+
+ENDPOINT   COMPARED  MATCHED   MISMATCHED  MATCH RATE  LAST MISMATCH
+state_ids  4821094   4821094   0           100.0000%   never
+state      1204553   1204551   2           99.9998%    3.1d ago
+
+state_ids: ready - 4821094 comparisons, no mismatches
+state: NOT READY - 2 mismatches, most recent 3.1d ago; the clock restarts when they stop
+```
+
+Design points that matter over a long run:
+
+- **Logging never blocks a request.** Records go to a background writer through
+  a bounded queue and are dropped if it fills, because a stalled federation
+  request is worse than a missing log line. Any drop is counted and reported as
+  a warning, since a lossy log invalidates the gate.
+- **Bounded disk.** Rotated files are gzipped and capped at `max_files`.
+- **Bodies are optional.** `body_kb: -1` records that a mismatch happened and
+  its shape without ever writing room content to disk.
+- **Atomic stats.** `stats.json` is written via temp-and-rename, so a crash
+  mid-write cannot lose a whole run's counters. A corrupt stats file does not
+  prevent startup.
+
+The diff itself is expressed per response field as which event IDs each side
+has that the other does not. `extra_in_native` is the dangerous direction: it
+means we may be returning data Synapse would have withheld.
+
+## Layout
+
+```
+cmd/gopro-worker/     entry point
+internal/config/      configuration and serving modes
+internal/proxy/       URI-preserving reverse proxy
+internal/fedapi/      routing and request handling
+internal/difflog/     shadow diff log, rotation, persistent stats, metrics
+internal/metrics/     Prometheus instrumentation
+deploy/               example config, nginx snippet, Grafana dashboard
+```
+
+## The one invariant that must not break
+
+A Matrix server-server request is signed over its **request URI**. Room and
+event IDs are percent-encoded in these paths (`!room%3Aserver`, `%24event`), so
+any normalisation or re-encoding anywhere in the chain invalidates the signature
+and turns every request into a 401. Worse, a decoded `%2F` becomes a real path
+separator and changes the route.
+
+`TestForwardPreservesRequestURI` pins this down by sending hand-built HTTP bytes
+over a socket and asserting the upstream sees a byte-identical URI. If you touch
+the proxy, that test is the one to watch.
+
+## Running
+
+```sh
+go test ./...
+go build ./cmd/gopro-worker
+./gopro-worker -config deploy/gopro-worker.example.yaml
+./gopro-worker -version
+./gopro-worker -diffstats /data/diffs
+```
+
+Container images are built and published to GHCR by
+`.github/workflows/docker.yml` on every push.
+
+See `deploy/` for the container config and the nginx routing snippet.
+
+## Metrics
+
+Exposed on `metrics.addr` (`:9200` by default):
+
+- `gopro_requests_total{endpoint,mode,status}`
+- `gopro_upstream_duration_seconds{endpoint}` — the latency baseline the native
+  implementation will be measured against
+- `gopro_upstream_errors_total{endpoint,backend}`
+- `gopro_response_bytes{endpoint}`
+
+When diff logging is enabled, the persisted shadow statistics are exported too,
+read from the writer on each scrape so Prometheus and `stats.json` cannot
+disagree:
+
+- `gopro_shadow_compared_total{endpoint}`, `gopro_shadow_matched_total{endpoint}`,
+  `gopro_shadow_mismatched_total{endpoint}`, `gopro_shadow_match_rate{endpoint}`
+- `gopro_shadow_last_mismatch_timestamp_seconds{endpoint}` — drives the
+  promotion clock
+- `gopro_difflog_dropped_total` — must be zero, or the log is incomplete
+
+These are restored from disk at startup, so unlike ordinary Prometheus counters
+they survive restarts.
+
+A Grafana dashboard covering all of it is in
+[`deploy/grafana/`](deploy/grafana/).

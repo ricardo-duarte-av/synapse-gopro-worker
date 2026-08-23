@@ -1,0 +1,63 @@
+# Synapse GoPro Worker configuration.
+#
+# Phase 1 forwards every request to a Synapse federation reader, so this is a
+# transparent insertion: nginx points at the worker, the worker points at the
+# Synapse workers it replaced in the routing chain.
+
+server_name: aguiarvieira.pt
+
+listen:
+  # Matches the Synapse worker convention of a unix socket in the shared
+  # /var/sockets/nginx volume.
+  socket: /var/sockets/nginx/av-gopro-worker-1.sock
+  socket_mode: "0660"
+
+upstream:
+  # The existing Synapse federation readers. Requests are balanced round-robin.
+  # These keep running: they are both the current implementation and, later, the
+  # reference the native implementation is compared against and the fallback it
+  # returns to on error.
+  sockets:
+    - /var/sockets/nginx/av-inbound-federation-worker-1.sock
+    - /var/sockets/nginx/av-inbound-federation-worker-2.sock
+  timeout_seconds: 60
+  max_idle_conns: 64
+
+metrics:
+  addr: ":9200"
+
+endpoints:
+  # proxy       - forward to Synapse, return its answer (Phase 1)
+  # shadow      - forward to Synapse and serve that, but also compute our own
+  #               answer and compare (Phase 2)
+  # canary:N    - serve our own answer for N% of requests (Phase 3)
+  # native      - serve our own answer, falling back to the proxy on error
+  event: proxy
+  state: proxy
+  state_ids: proxy
+
+log:
+  level: info
+  pretty: false
+
+# Where shadow-mode disagreements with Synapse are recorded.
+#
+# Required as soon as any endpoint moves to shadow or canary mode: a comparison
+# whose disagreements go unrecorded is not worth running. A soak lasts weeks, so
+# the defaults bound disk use - rotated files are gzipped and capped in number.
+#
+# Inspect the accumulated evidence at any time with:
+#   gopro-worker -diffstats /data/diffs
+diff_log:
+  dir: /data/diffs
+  # At most max_files * max_file_mb of uncompressed-equivalent history.
+  max_file_mb: 64
+  max_files: 10
+  compress: true
+  # Records are dropped rather than blocking a federation request. Any drop is
+  # reported by -diffstats, since a lossy log invalidates the promotion gate.
+  queue_size: 1024
+  # Per-body cap for replay. Set to -1 to omit bodies entirely and keep room
+  # content out of the log.
+  body_kb: 256
+  list_limit: 100

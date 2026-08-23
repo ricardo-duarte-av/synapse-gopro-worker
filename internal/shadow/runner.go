@@ -45,6 +45,20 @@ type ProxyResult struct {
 	Truncated bool
 }
 
+// matrixErrorResponse turns a Matrix error into the body and status it would
+// be served with, leaving anything else as an internal failure.
+func matrixErrorResponse(err error) ([]byte, int, error) {
+	var me *matrixstate.MatrixError
+	if errors.As(err, &me) {
+		body, mErr := json.Marshal(me)
+		if mErr != nil {
+			return nil, 0, mErr
+		}
+		return body, me.Status, nil
+	}
+	return nil, 0, err
+}
+
 // StateIDsResolver computes native /state_ids answers.
 //
 // The Runner depends on this narrow interface rather than the concrete
@@ -52,15 +66,17 @@ type ProxyResult struct {
 // panics, never blocking a request — can be tested without a database.
 type StateIDsResolver interface {
 	StateIDs(ctx context.Context, origin, roomID, eventID string) (*matrixstate.StateIDsResponse, error)
+	Event(ctx context.Context, origin, serverName, eventID string) (*matrixstate.TransactionResponse, error)
 }
 
 // Runner computes native answers alongside proxied ones and records
 // disagreements.
 type Runner struct {
-	resolver StateIDsResolver
-	verifier *fedauth.Verifier
-	diffs    *difflog.Writer
-	log      zerolog.Logger
+	resolver   StateIDsResolver
+	serverName string
+	verifier   *fedauth.Verifier
+	diffs      *difflog.Writer
+	log        zerolog.Logger
 
 	// timeout bounds one native computation. Shadow work is best-effort: it
 	// must never outlive its usefulness or pile up.
@@ -80,7 +96,7 @@ type Options struct {
 
 // NewRunner builds a Runner. verifier may be nil, in which case X-Matrix
 // verification is not exercised.
-func NewRunner(resolver StateIDsResolver, verifier *fedauth.Verifier, diffs *difflog.Writer, log zerolog.Logger, opts Options) *Runner {
+func NewRunner(resolver StateIDsResolver, serverName string, verifier *fedauth.Verifier, diffs *difflog.Writer, log zerolog.Logger, opts Options) *Runner {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 30 * time.Second
 	}
@@ -88,12 +104,13 @@ func NewRunner(resolver StateIDsResolver, verifier *fedauth.Verifier, diffs *dif
 		opts.Concurrency = 4
 	}
 	return &Runner{
-		resolver: resolver,
-		verifier: verifier,
-		diffs:    diffs,
-		log:      log,
-		timeout:  opts.Timeout,
-		sem:      make(chan struct{}, opts.Concurrency),
+		resolver:   resolver,
+		serverName: serverName,
+		verifier:   verifier,
+		diffs:      diffs,
+		log:        log,
+		timeout:    opts.Timeout,
+		sem:        make(chan struct{}, opts.Concurrency),
 	}
 }
 
@@ -310,12 +327,22 @@ func (r *Runner) compute(ctx context.Context, req Request, origin string) ([]byt
 	case "state_ids":
 		resp, err := r.resolver.StateIDs(ctx, origin, req.RoomID, req.EventID)
 		if err != nil {
-			var me *matrixstate.MatrixError
-			if errors.As(err, &me) {
-				body, _ := json.Marshal(me)
-				return body, me.Status, nil
-			}
+			return matrixErrorResponse(err)
+		}
+		body, err := json.Marshal(resp)
+		if err != nil {
 			return nil, 0, err
+		}
+		return body, 200, nil
+	case "event":
+		resp, err := r.resolver.Event(ctx, origin, r.serverName, req.EventID)
+		if errors.Is(err, matrixstate.ErrEventNotFound) {
+			// Synapse answers an unknown event with 404 and an empty body,
+			// not a JSON error.
+			return nil, 404, nil
+		}
+		if err != nil {
+			return matrixErrorResponse(err)
 		}
 		body, err := json.Marshal(resp)
 		if err != nil {
@@ -331,6 +358,8 @@ func (r *Runner) diff(endpoint string, synapseBody, nativeBody []byte) (*difflog
 	switch endpoint {
 	case "state_ids":
 		return CompareStateIDs(synapseBody, nativeBody)
+	case "event":
+		return CompareEvent(synapseBody, nativeBody)
 	default:
 		return nil, errors.New("shadow: no comparator for " + endpoint)
 	}

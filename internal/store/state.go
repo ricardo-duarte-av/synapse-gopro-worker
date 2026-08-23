@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -91,4 +92,129 @@ func (s *Store) GetStateForGroup(ctx context.Context, group int64) (map[StateKey
 		return nil, fmt.Errorf("store: state rows: %w", err)
 	}
 	return state, nil
+}
+
+// stateGroupFilteredQuery resolves state at a group, restricted to given event
+// types.
+//
+// /event needs only the history visibility setting and, sometimes, the
+// membership of one server. Resolving the full state map would mean reading
+// every state event in the room — over a hundred thousand in the largest room
+// here — for a single event lookup.
+const stateGroupFilteredQuery = `
+	WITH RECURSIVE sgs(state_group) AS (
+		VALUES($1::bigint)
+	  UNION ALL
+		SELECT prev_state_group FROM state_group_edges e, sgs s
+		WHERE s.state_group = e.state_group
+	)
+	SELECT DISTINCT ON (type, state_key) type, state_key, event_id
+	FROM state_groups_state
+	INNER JOIN sgs USING (state_group)
+	WHERE type = ANY($2)
+	ORDER BY type, state_key, state_group DESC`
+
+// GetFilteredStateForGroup resolves the state at a group for the given event
+// types only.
+func (s *Store) GetFilteredStateForGroup(ctx context.Context, group int64, types []string) (map[StateKey]string, error) {
+	return s.filteredState(ctx, stateGroupFilteredQuery, group, types, nil)
+}
+
+// stateGroupMemberQuery is the same walk restricted to one server's membership
+// events.
+//
+// Synapse pulls the entire membership list and filters it in Python, and notes
+// in a comment that this is wasteful. Filtering by the user ID suffix in SQL
+// produces the same set for far less work. The suffix match is only a
+// prefilter; the exact domain is checked by the caller, since LIKE would also
+// match a malformed ID such as "@a:b:server".
+const stateGroupMemberQuery = `
+	WITH RECURSIVE sgs(state_group) AS (
+		VALUES($1::bigint)
+	  UNION ALL
+		SELECT prev_state_group FROM state_group_edges e, sgs s
+		WHERE s.state_group = e.state_group
+	)
+	SELECT DISTINCT ON (type, state_key) type, state_key, event_id
+	FROM state_groups_state
+	INNER JOIN sgs USING (state_group)
+	WHERE type = 'm.room.member' AND state_key LIKE $2
+	ORDER BY type, state_key, state_group DESC`
+
+// GetServerMembershipStateForGroup resolves membership state at a group for
+// users on one server.
+func (s *Store) GetServerMembershipStateForGroup(ctx context.Context, group int64, serverName string) (map[StateKey]string, error) {
+	if strings.ContainsAny(serverName, "%_") {
+		return nil, fmt.Errorf("store: invalid server name %q", serverName)
+	}
+	return s.filteredState(ctx, stateGroupMemberQuery, group, nil, ptr("%:"+serverName))
+}
+
+// filteredState runs one of the filtered state walks.
+func (s *Store) filteredState(ctx context.Context, query string, group int64, types []string, like *string) (map[StateKey]string, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("store: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Same planner hint as the unfiltered walk; without it state_groups_state
+	// is scanned sequentially.
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		return nil, fmt.Errorf("store: disable seqscan: %w", err)
+	}
+
+	var rows pgx.Rows
+	if like != nil {
+		rows, err = tx.Query(ctx, query, group, *like)
+	} else {
+		rows, err = tx.Query(ctx, query, group, types)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: filtered state: %w", err)
+	}
+	defer rows.Close()
+
+	state := make(map[StateKey]string)
+	for rows.Next() {
+		var k StateKey
+		var eventID string
+		if err := rows.Scan(&k.Type, &k.StateKey, &eventID); err != nil {
+			return nil, fmt.Errorf("store: scan state row: %w", err)
+		}
+		state[k] = eventID
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: filtered state rows: %w", err)
+	}
+	return state, nil
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// AreUsersErased reports which of the given users have requested erasure.
+//
+// An erased user's events must not be served to other servers, redacted or
+// otherwise.
+func (s *Store) AreUsersErased(ctx context.Context, userIDs []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(userIDs))
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT user_id FROM erased_users WHERE user_id = ANY($1)`, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: are users erased: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan erased user: %w", err)
+		}
+		out[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: erased user rows: %w", err)
+	}
+	return out, nil
 }

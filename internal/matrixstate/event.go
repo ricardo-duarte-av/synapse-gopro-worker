@@ -1,0 +1,275 @@
+package matrixstate
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/tidwall/sjson"
+	"maunium.net/go/mautrix/federation/pdu"
+	"maunium.net/go/mautrix/id"
+
+	"github.com/daedric/synapse-gopro-worker/internal/store"
+)
+
+const historyVisibilityType = "m.room.history_visibility"
+
+// TransactionResponse is the body of GET /_matrix/federation/v1/event, which
+// the spec shapes as a transaction carrying a single PDU.
+type TransactionResponse struct {
+	Origin         string            `json:"origin"`
+	OriginServerTS int64             `json:"origin_server_ts"`
+	PDUs           []json.RawMessage `json:"pdus"`
+}
+
+// ErrEventNotFound signals that we do not have the event. Synapse answers this
+// with a 404 and an empty body rather than a JSON error, so it is distinct from
+// a MatrixError.
+var ErrEventNotFound = errors.New("event not found")
+
+// Event answers /event for a remote server.
+//
+// Unlike the state endpoints, this one applies history-visibility filtering:
+// an event the server may not see is returned redacted rather than withheld.
+// It is also the only one of the three where a mistake leaks private room
+// history, so every step mirrors Synapse's get_persisted_pdu.
+func (r *Resolver) Event(ctx context.Context, origin, serverName, eventID string) (*TransactionResponse, error) {
+	ev, err := r.db.GetEvent(ctx, eventID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, ErrEventNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get event: %w", err)
+	}
+
+	// Note that Synapse checks room membership here but, unlike the state
+	// endpoints, does not check the room's server ACL. We mirror that.
+	partial, err := r.db.IsPartialStateRoom(ctx, ev.RoomID)
+	if err != nil {
+		return nil, fmt.Errorf("partial state check: %w", err)
+	}
+	if partial {
+		return nil, errPartialState()
+	}
+	inRoom, err := r.db.IsHostInRoom(ctx, ev.RoomID, origin)
+	if err != nil {
+		return nil, fmt.Errorf("membership check: %w", err)
+	}
+	if !inRoom {
+		return nil, errHostNotInRoom()
+	}
+
+	visible, err := r.eventVisible(ctx, ev, origin, serverName)
+	if err != nil {
+		return nil, err
+	}
+
+	body := ev.JSON
+	if !visible {
+		// Filtered events are redacted, not omitted.
+		body, err = redactEvent(ev)
+		if err != nil {
+			return nil, fmt.Errorf("redact event: %w", err)
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	body, err = applyPDUJSONRules(body, now)
+	if err != nil {
+		return nil, fmt.Errorf("prepare pdu: %w", err)
+	}
+
+	return &TransactionResponse{
+		Origin:         serverName,
+		OriginServerTS: now,
+		PDUs:           []json.RawMessage{body},
+	}, nil
+}
+
+// eventVisible applies Synapse's filter_events_for_server to a single event.
+func (r *Resolver) eventVisible(ctx context.Context, ev *store.Event, targetServer, localServer string) (bool, error) {
+	sender, err := senderOf(ev.JSON)
+	if err != nil {
+		return false, err
+	}
+
+	erased, err := r.db.AreUsersErased(ctx, []string{sender})
+	if err != nil {
+		return false, fmt.Errorf("erased users: %w", err)
+	}
+
+	// A remote server's events in a partially-joined room are invisible; the
+	// room is not partial-stated here, so this is always false at this point,
+	// but it is kept explicit to match the original.
+	partialStateInvisible := false
+
+	vis, memberships, err := r.visibilityAt(ctx, ev, targetServer)
+	if err != nil {
+		return false, err
+	}
+	return eventVisibleToServer(sender, targetServer, vis, erased, partialStateInvisible, memberships), nil
+}
+
+// visibilityAt resolves the history visibility setting at an event, and the
+// target server's memberships there if the setting requires them.
+//
+// The membership lookup is skipped whenever visibility is open, which is the
+// common case. That matters: pulling a large room's membership list for every
+// /event request would be far more expensive than the lookup it guards.
+func (r *Resolver) visibilityAt(ctx context.Context, ev *store.Event, targetServer string) (string, []Membership, error) {
+	if ev.Outlier {
+		// We have no state at an outlier. Synapse treats that as no
+		// history_visibility event, which means open.
+		return HistoryVisibilityShared, nil, nil
+	}
+
+	group, err := r.db.GetStateGroupForEvent(ctx, ev.EventID)
+	if errors.Is(err, store.ErrNotFound) {
+		return HistoryVisibilityShared, nil, nil
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("state group: %w", err)
+	}
+
+	state, err := r.db.GetFilteredStateForGroup(ctx, group, []string{historyVisibilityType})
+	if err != nil {
+		return "", nil, fmt.Errorf("history visibility state: %w", err)
+	}
+
+	vis := HistoryVisibilityShared
+	if visEventID, ok := state[store.StateKey{Type: historyVisibilityType, StateKey: ""}]; ok {
+		visEvent, err := r.db.GetEvent(ctx, visEventID)
+		if err == nil {
+			if v := historyVisibilityOf(visEvent.JSON); v != "" {
+				vis = v
+			}
+		}
+	}
+
+	if vis != HistoryVisibilityInvited && vis != HistoryVisibilityJoined {
+		return vis, nil, nil
+	}
+
+	memberState, err := r.db.GetServerMembershipStateForGroup(ctx, group, targetServer)
+	if err != nil {
+		return "", nil, fmt.Errorf("membership state: %w", err)
+	}
+
+	ids := make([]string, 0, len(memberState))
+	keyOf := make(map[string]string, len(memberState))
+	for key, id := range memberState {
+		// The SQL suffix match is a prefilter; check the domain exactly.
+		if domainOf(key.StateKey) != targetServer {
+			continue
+		}
+		ids = append(ids, id)
+		keyOf[id] = key.StateKey
+	}
+	if len(ids) == 0 {
+		return vis, nil, nil
+	}
+
+	events, err := r.db.GetEvents(ctx, ids)
+	if err != nil {
+		return "", nil, fmt.Errorf("membership events: %w", err)
+	}
+	memberships := make([]Membership, 0, len(events))
+	for evID, memberEvent := range events {
+		memberships = append(memberships, Membership{
+			UserID:     keyOf[evID],
+			Membership: membershipOf(memberEvent.JSON),
+		})
+	}
+	return vis, memberships, nil
+}
+
+// redactEvent strips an event to the fields the room version preserves.
+func redactEvent(ev *store.Event) ([]byte, error) {
+	var p pdu.PDU
+	if err := json.Unmarshal(ev.JSON, &p); err != nil {
+		return nil, err
+	}
+	roomVersion := id.RoomVersion(ev.RoomVersion)
+	if roomVersion == "" {
+		roomVersion = id.RoomV1
+	}
+	return json.Marshal(p.Redact(roomVersion))
+}
+
+// applyPDUJSONRules performs the two transformations Synapse applies when
+// putting an event on the wire, from EventBase.get_pdu_json.
+//
+// unsigned.age_ts becomes unsigned.age relative to now, and
+// unsigned.redacted_because is dropped. The age field is therefore
+// wall-clock-dependent and cannot be compared between implementations by value.
+func applyPDUJSONRules(body []byte, nowMS int64) ([]byte, error) {
+	var ev struct {
+		Unsigned map[string]json.RawMessage `json:"unsigned"`
+	}
+	if err := json.Unmarshal(body, &ev); err != nil {
+		return nil, err
+	}
+	if ev.Unsigned == nil {
+		return body, nil
+	}
+
+	out := body
+	if raw, ok := ev.Unsigned["age_ts"]; ok {
+		var ageTS int64
+		if err := json.Unmarshal(raw, &ageTS); err == nil {
+			var err error
+			out, err = sjson.SetBytes(out, "unsigned.age", nowMS-ageTS)
+			if err != nil {
+				return nil, err
+			}
+			out, err = sjson.DeleteBytes(out, "unsigned.age_ts")
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if _, ok := ev.Unsigned["redacted_because"]; ok {
+		var err error
+		out, err = sjson.DeleteBytes(out, "unsigned.redacted_because")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func senderOf(body []byte) (string, error) {
+	var ev struct {
+		Sender string `json:"sender"`
+	}
+	if err := json.Unmarshal(body, &ev); err != nil {
+		return "", fmt.Errorf("parse sender: %w", err)
+	}
+	return ev.Sender, nil
+}
+
+func historyVisibilityOf(body []byte) string {
+	var ev struct {
+		Content struct {
+			HistoryVisibility string `json:"history_visibility"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(body, &ev); err != nil {
+		return ""
+	}
+	return ev.Content.HistoryVisibility
+}
+
+func membershipOf(body []byte) string {
+	var ev struct {
+		Content struct {
+			Membership string `json:"membership"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(body, &ev); err != nil {
+		return ""
+	}
+	return ev.Content.Membership
+}

@@ -51,7 +51,12 @@ endpoints:
   #               answer and compare (Phase 2)
   # canary:N    - serve our own answer for N% of requests (Phase 3)
   # native      - serve our own answer, falling back to the proxy on error
+  # /event applies history-visibility filtering, which the state endpoints do
+  # not. It is the only place where a mistake serves private room history to a
+  # server that should not see it, so it warrants the longest soak.
   event: proxy
+  # /state has no native implementation yet. It receives no traffic on this
+  # deployment anyway.
   state: proxy
   # state_ids has a native implementation. Shadow mode still serves Synapse's
   # answer; it only also computes our own and records any disagreement.

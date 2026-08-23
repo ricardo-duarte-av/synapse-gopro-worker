@@ -15,10 +15,19 @@ import (
 
 type fakeResolver struct {
 	resp  *matrixstate.StateIDsResponse
+	event *matrixstate.TransactionResponse
 	err   error
 	delay time.Duration
 	panic bool
 	calls atomic.Int64
+}
+
+func (f *fakeResolver) Event(ctx context.Context, origin, serverName, eventID string) (*matrixstate.TransactionResponse, error) {
+	f.calls.Add(1)
+	if f.panic {
+		panic("boom")
+	}
+	return f.event, f.err
 }
 
 func (f *fakeResolver) StateIDs(ctx context.Context, origin, roomID, eventID string) (*matrixstate.StateIDsResponse, error) {
@@ -43,7 +52,7 @@ func newTestRunner(t *testing.T, r StateIDsResolver, opts Options) (*Runner, *di
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	return NewRunner(r, nil, w, zerolog.Nop(), opts), w
+	return NewRunner(r, "example.com", nil, w, zerolog.Nop(), opts), w
 }
 
 func req() Request {

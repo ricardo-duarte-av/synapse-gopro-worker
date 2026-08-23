@@ -12,8 +12,14 @@ ARG TAG=dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 
-# Static binary: the runtime image has no libc.
-RUN CGO_ENABLED=0 go build -trimpath \
+# GOEXPERIMENT=jsonv2 is required by mautrix's federation/pdu package, which
+# implements per-room-version redaction. Redaction is security-relevant -- it is
+# what strips content from an event a server may not fully see -- so it is worth
+# depending on a maintained implementation rather than hand-rolling the
+# per-version rules. Note this also switches encoding/json to the v2 backend
+# process-wide; shadow comparison against Synapse is what would surface any
+# resulting difference in output.
+RUN CGO_ENABLED=0 GOEXPERIMENT=jsonv2 go build -trimpath \
       -ldflags="-s -w \
         -X main.tag=${TAG} \
         -X main.commit=${COMMIT} \

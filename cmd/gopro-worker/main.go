@@ -136,6 +136,7 @@ func run() error {
 	if db != nil && cfg.NeedsDatabase() {
 		runner = shadow.NewRunner(
 			matrixstate.NewResolver(db),
+			cfg.ServerName,
 			fedauth.New(cfg.ServerName, fedauth.Options{
 				KeyRefetchDelay: time.Duration(cfg.Auth.KeyRefetchMinutes) * time.Minute,
 				Timeout:         time.Duration(cfg.Auth.TimeoutSeconds) * time.Second,

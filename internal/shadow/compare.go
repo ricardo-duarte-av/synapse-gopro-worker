@@ -3,8 +3,10 @@
 package shadow
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 
 	"github.com/daedric/synapse-gopro-worker/internal/difflog"
@@ -71,6 +73,113 @@ func diffIDSets(field string, synapse, native []string) difflog.FieldDiff {
 	sort.Strings(fd.MissingFromNative)
 	sort.Strings(fd.ExtraInNative)
 	return fd
+}
+
+// transactionBody is the /event response shape.
+type transactionBody struct {
+	Origin         string            `json:"origin"`
+	OriginServerTS int64             `json:"origin_server_ts"`
+	PDUs           []json.RawMessage `json:"pdus"`
+}
+
+// CompareEvent diffs two /event responses.
+//
+// Two fields are wall-clock-dependent and cannot be compared by value: the
+// transaction's origin_server_ts, and unsigned.age, which Synapse computes as
+// "now minus age_ts" when serialising. Their presence is still compared, so
+// emitting age where Synapse emits age_ts, or omitting it entirely, is still
+// caught.
+func CompareEvent(synapseBody, nativeBody []byte) (*difflog.Diff, error) {
+	var syn, nat transactionBody
+	if err := json.Unmarshal(synapseBody, &syn); err != nil {
+		return nil, fmt.Errorf("shadow: parse synapse body: %w", err)
+	}
+	if err := json.Unmarshal(nativeBody, &nat); err != nil {
+		return nil, fmt.Errorf("shadow: parse native body: %w", err)
+	}
+
+	fd := difflog.FieldDiff{
+		Field:        "pdus",
+		SynapseCount: len(syn.PDUs),
+		NativeCount:  len(nat.PDUs),
+	}
+
+	if syn.Origin != nat.Origin {
+		fd.ContentMismatch = append(fd.ContentMismatch,
+			fmt.Sprintf("origin: synapse=%q native=%q", syn.Origin, nat.Origin))
+	}
+
+	synPDUs := indexPDUs(syn.PDUs)
+	natPDUs := indexPDUs(nat.PDUs)
+
+	for id, synPDU := range synPDUs {
+		natPDU, ok := natPDUs[id]
+		if !ok {
+			fd.MissingFromNative = append(fd.MissingFromNative, id)
+			continue
+		}
+		if !equalPDU(synPDU, natPDU) {
+			fd.ContentMismatch = append(fd.ContentMismatch, id)
+		}
+	}
+	for id := range natPDUs {
+		if _, ok := synPDUs[id]; !ok {
+			fd.ExtraInNative = append(fd.ExtraInNative, id)
+		}
+	}
+
+	sort.Strings(fd.MissingFromNative)
+	sort.Strings(fd.ExtraInNative)
+	sort.Strings(fd.ContentMismatch)
+
+	diff := &difflog.Diff{Fields: []difflog.FieldDiff{fd}}
+	if diff.Empty() {
+		return nil, nil
+	}
+	return diff, nil
+}
+
+// indexPDUs keys events by their event ID, falling back to position when an
+// event carries none.
+func indexPDUs(pdus []json.RawMessage) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(pdus))
+	for i, raw := range pdus {
+		var ev struct {
+			EventID string `json:"event_id"`
+		}
+		key := fmt.Sprintf("#%d", i)
+		if err := json.Unmarshal(raw, &ev); err == nil && ev.EventID != "" {
+			key = ev.EventID
+		}
+		out[key] = raw
+	}
+	return out
+}
+
+// equalPDU compares two events, ignoring the value of the age field while still
+// requiring both sides to agree on whether it is present.
+func equalPDU(a, b json.RawMessage) bool {
+	na, okA := normalisePDU(a)
+	nb, okB := normalisePDU(b)
+	if !okA || !okB {
+		return bytes.Equal(a, b)
+	}
+	return reflect.DeepEqual(na, nb)
+}
+
+// normalisePDU decodes an event and replaces the wall-clock-dependent age with
+// a marker, so presence is compared but the value is not.
+func normalisePDU(raw json.RawMessage) (map[string]any, bool) {
+	var ev map[string]any
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		return nil, false
+	}
+	if unsigned, ok := ev["unsigned"].(map[string]any); ok {
+		if _, has := unsigned["age"]; has {
+			unsigned["age"] = "<age>"
+		}
+	}
+	return ev, true
 }
 
 // CompareStatus reports whether two responses agree at the HTTP level, and

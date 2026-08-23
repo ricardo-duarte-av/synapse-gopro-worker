@@ -21,11 +21,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go vet ./...
+      # Required by mautrix's federation/pdu package; see the Dockerfile.
+      - run: GOEXPERIMENT=jsonv2 go vet ./...
       # -race matters here: the proxy shares a round-robin counter and HTTP
       # transports across goroutines, and the diff logger hands records to a
       # background writer.
-      - run: go test -race ./...
+      - run: GOEXPERIMENT=jsonv2 go test -race ./...
       - name: Check formatting
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
 

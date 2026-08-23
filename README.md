@@ -152,11 +152,23 @@ separator and changes the route.
 over a socket and asserting the upstream sees a byte-identical URI. If you touch
 the proxy, that test is the one to watch.
 
+## Building
+
+`GOEXPERIMENT=jsonv2` is required. mautrix's `federation/pdu` package, which
+implements per-room-version redaction, is gated behind it. Redaction is what
+strips content from an event a requesting server may not fully see, so it is
+worth depending on a maintained implementation rather than hand-rolling the
+per-version rules.
+
+Be aware this also switches `encoding/json` to its v2 backend process-wide.
+Shadow comparison against Synapse is what would surface any resulting
+difference in serialisation.
+
 ## Running
 
 ```sh
-go test ./...
-go build ./cmd/gopro-worker
+GOEXPERIMENT=jsonv2 go test ./...
+GOEXPERIMENT=jsonv2 go build ./cmd/gopro-worker
 ./gopro-worker -config deploy/gopro-worker.example.yaml
 ./gopro-worker -version
 ./gopro-worker -diffstats /data/diffs

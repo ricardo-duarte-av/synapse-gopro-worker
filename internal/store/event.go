@@ -17,10 +17,17 @@ type Event struct {
 	RoomVersion string
 	// JSON is the raw event as stored, which is what federation returns.
 	JSON []byte
-	// InternalMetadata is Synapse's private per-event metadata. It carries the
-	// outlier flag, which decides whether we know the state at this event.
+	// InternalMetadata is Synapse's private per-event metadata.
 	InternalMetadata []byte
-	FormatVersion    int
+	// Outlier reports that we hold the event but not the state around it, so
+	// /state and /state_ids cannot be answered at this event.
+	//
+	// It comes from the events table, not internal_metadata: Synapse stores it
+	// as a column and copies it onto the event's metadata when loading. The
+	// internal_metadata blob is empty for outliers, so reading it there would
+	// silently treat every outlier as a normal event.
+	Outlier       bool
+	FormatVersion int
 	// RejectedReason is non-empty for events that failed auth. They are still
 	// stored, and /event may return them, but they are not part of room state.
 	RejectedReason string
@@ -34,7 +41,7 @@ func (e *Event) IsStateEvent() bool { return e.StateKey != nil }
 const eventQuery = `
 	SELECT e.event_id, e.room_id, e.type, e.state_key,
 	       ej.json, ej.internal_metadata, ej.format_version,
-	       r.room_version, rej.reason
+	       r.room_version, rej.reason, e.outlier
 	FROM events AS e
 	  JOIN event_json AS ej USING (event_id)
 	  LEFT JOIN rooms AS r ON r.room_id = e.room_id
@@ -73,7 +80,7 @@ func (s *Store) GetEvents(ctx context.Context, eventIDs []string) (map[string]*E
 		var formatVersion *int
 		var roomVersion, rejected *string
 		if err := rows.Scan(&e.EventID, &e.RoomID, &e.Type, &e.StateKey,
-			&e.JSON, &e.InternalMetadata, &formatVersion, &roomVersion, &rejected); err != nil {
+			&e.JSON, &e.InternalMetadata, &formatVersion, &roomVersion, &rejected, &e.Outlier); err != nil {
 			return nil, fmt.Errorf("store: scan event: %w", err)
 		}
 		if formatVersion != nil {

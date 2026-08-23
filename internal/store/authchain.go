@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -182,4 +183,90 @@ func (s *Store) materialiseChains(ctx context.Context, eventChains map[int64]int
 	}
 
 	return reachable, nil
+}
+
+// authChainBatch bounds how many event IDs are queried at once during the
+// fallback walk, matching Synapse's batching.
+const authChainBatch = 100
+
+// GetAuthChainIDsRecursive walks event_auth breadth-first to compute an auth
+// chain, without relying on the chain cover index.
+//
+// This is the fallback for events the cover index does not describe. A room's
+// has_auth_chain_index flag is not sufficient to rule this out: individual
+// events can still be missing chain rows, typically ones persisted before the
+// index existed. Synapse hits the same case and falls back the same way.
+//
+// Ported from Synapse's _get_auth_chain_ids_txn.
+func (s *Store) GetAuthChainIDsRecursive(ctx context.Context, eventIDs []string) ([]string, error) {
+	results := make(map[string]struct{})
+	front := make(map[string]struct{}, len(eventIDs))
+	for _, id := range eventIDs {
+		front[id] = struct{}{}
+	}
+
+	for len(front) > 0 {
+		ids := make([]string, 0, len(front))
+		for id := range front {
+			ids = append(ids, id)
+		}
+
+		next := make(map[string]struct{})
+		for start := 0; start < len(ids); start += authChainBatch {
+			end := min(start+authChainBatch, len(ids))
+
+			// The join against events restricts the walk to auth events we
+			// actually hold, matching Synapse.
+			const q = `
+				SELECT a.auth_id
+				FROM event_auth AS a
+				INNER JOIN events AS e ON e.event_id = a.auth_id
+				WHERE a.event_id = ANY($1)`
+
+			rows, err := s.pool.Query(ctx, q, ids[start:end])
+			if err != nil {
+				return nil, fmt.Errorf("store: recursive auth chain: %w", err)
+			}
+			for rows.Next() {
+				var authID string
+				if err := rows.Scan(&authID); err != nil {
+					rows.Close()
+					return nil, fmt.Errorf("store: scan auth id: %w", err)
+				}
+				next[authID] = struct{}{}
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return nil, fmt.Errorf("store: recursive auth chain rows: %w", err)
+			}
+		}
+
+		// Only follow events we have not already accounted for, which also
+		// terminates the walk on the cycles that malformed rooms can contain.
+		front = make(map[string]struct{})
+		for id := range next {
+			if _, seen := results[id]; !seen {
+				results[id] = struct{}{}
+				front[id] = struct{}{}
+			}
+		}
+	}
+
+	out := make([]string, 0, len(results))
+	for id := range results {
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// GetAuthChainIDsWithFallback uses the chain cover index where available and
+// falls back to the recursive walk otherwise.
+func (s *Store) GetAuthChainIDsWithFallback(ctx context.Context, roomID string, eventIDs []string) ([]string, bool, error) {
+	ids, err := s.GetAuthChainIDs(ctx, roomID, eventIDs)
+	var noIndex ErrNoChainCoverIndex
+	if errors.As(err, &noIndex) {
+		ids, err := s.GetAuthChainIDsRecursive(ctx, eventIDs)
+		return ids, true, err
+	}
+	return ids, false, err
 }

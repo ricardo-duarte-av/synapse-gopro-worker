@@ -84,7 +84,29 @@ type Config struct {
 	Endpoints Endpoints `yaml:"endpoints"`
 	Log       Log       `yaml:"log"`
 	DiffLog   DiffLog   `yaml:"diff_log"`
+	Database  Database  `yaml:"database"`
 }
+
+// Database describes read-only access to Synapse's PostgreSQL database.
+//
+// The worker only reads, and is expected to connect as a role with SELECT only
+// and default_transaction_read_only set. See deploy/readonly-role.sql.
+type Database struct {
+	// DSN is a libpq connection string. Prefer the unix socket, which needs no
+	// password and no network path:
+	//   host=/var/sockets user=gopro_ro dbname=synapse-db
+	// Empty disables database access, which is correct while every endpoint is
+	// in proxy mode.
+	DSN string `yaml:"dsn"`
+	// MaxConns bounds the connection pool. Zero uses pgx's default of the
+	// greater of 4 and NumCPU.
+	MaxConns int `yaml:"max_conns"`
+	// ConnectTimeoutSeconds bounds the initial connection. Zero uses 10.
+	ConnectTimeoutSeconds int `yaml:"connect_timeout_seconds"`
+}
+
+// Enabled reports whether database access is configured.
+func (d Database) Enabled() bool { return d.DSN != "" }
 
 // DiffLog configures where shadow-mode disagreements are recorded.
 //
@@ -223,18 +245,42 @@ func (c *Config) validate() error {
 	if c.DiffLog.BodyKB < -1 {
 		return fmt.Errorf("diff_log: body_kb must be -1 (omit), 0 (default) or positive")
 	}
-	// Shadow and canary modes compare against Synapse, and a comparison whose
-	// disagreements are not recorded is not worth running.
-	if !c.DiffLog.Enabled() {
-		for name, m := range map[string]Mode{
-			"event": c.Endpoints.Event, "state": c.Endpoints.State, "state_ids": c.Endpoints.StateIDs,
-		} {
-			if m.Kind == ModeShadow || m.Kind == ModeCanary {
-				return fmt.Errorf("endpoint %s is in %s mode but diff_log.dir is not set", name, m.Kind)
-			}
+	if c.Database.MaxConns < 0 || c.Database.ConnectTimeoutSeconds < 0 {
+		return fmt.Errorf("database: values must not be negative")
+	}
+
+	for name, m := range c.Endpoints.byName() {
+		// Shadow and canary compare against Synapse, and a comparison whose
+		// disagreements are not recorded is not worth running.
+		if (m.Kind == ModeShadow || m.Kind == ModeCanary) && !c.DiffLog.Enabled() {
+			return fmt.Errorf("endpoint %s is in %s mode but diff_log.dir is not set", name, m.Kind)
+		}
+		// Anything beyond proxy needs to compute an answer of its own.
+		if m.Kind != ModeProxy && !c.Database.Enabled() {
+			return fmt.Errorf("endpoint %s is in %s mode but database.dsn is not set", name, m.Kind)
 		}
 	}
 	return nil
+}
+
+// byName maps each endpoint to its configured mode.
+func (e Endpoints) byName() map[string]Mode {
+	return map[string]Mode{
+		"event":     e.Event,
+		"state":     e.State,
+		"state_ids": e.StateIDs,
+	}
+}
+
+// NeedsDatabase reports whether any endpoint is configured to compute its own
+// answer.
+func (c *Config) NeedsDatabase() bool {
+	for _, m := range c.Endpoints.byName() {
+		if m.Kind != ModeProxy {
+			return true
+		}
+	}
+	return false
 }
 
 // ParsedSocketMode returns the listen socket permission bits.

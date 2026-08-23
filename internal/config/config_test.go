@@ -51,6 +51,8 @@ func TestParseModes(t *testing.T) {
 	cfg, err := parse([]byte(minimal + `
 diff_log:
   dir: /data/diffs
+database:
+  dsn: "host=/var/sockets user=gopro_ro dbname=synapse-db"
 endpoints:
   event: proxy
   state: shadow
@@ -100,6 +102,36 @@ func TestDiffLogDefaults(t *testing.T) {
 	}
 }
 
+func TestNeedsDatabase(t *testing.T) {
+	cfg, err := parse([]byte(minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NeedsDatabase() {
+		t.Error("all-proxy config should not need a database")
+	}
+	if cfg.Database.Enabled() {
+		t.Error("database should be disabled by default")
+	}
+
+	cfg2, err := parse([]byte(minimal + `diff_log:
+  dir: /d
+database:
+  dsn: "host=/var/sockets user=gopro_ro dbname=synapse-db"
+endpoints:
+  state_ids: shadow
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg2.NeedsDatabase() {
+		t.Error("a shadow endpoint should need a database")
+	}
+	if !cfg2.Database.Enabled() {
+		t.Error("Enabled() = false, want true when dsn is set")
+	}
+}
+
 func TestParseRejectsBadInput(t *testing.T) {
 	cases := []struct {
 		name string
@@ -121,6 +153,10 @@ func TestParseRejectsBadInput(t *testing.T) {
 		// so shadow and canary modes require a diff log.
 		{"shadow without a diff log", minimal + "endpoints:\n  state: shadow\n", "diff_log.dir is not set"},
 		{"canary without a diff log", minimal + "endpoints:\n  event: \"canary:5\"\n", "diff_log.dir is not set"},
+		// Anything past proxy has to compute an answer, which needs the database.
+		{"shadow without a database", minimal + "diff_log:\n  dir: /d\nendpoints:\n  state: shadow\n", "database.dsn is not set"},
+		{"native without a database", minimal + "endpoints:\n  state: native\n", "database.dsn is not set"},
+		{"negative max_conns", minimal + "database:\n  dsn: x\n  max_conns: -1\n", "must not be negative"},
 		{"negative diff log size", minimal + "diff_log:\n  dir: /d\n  max_files: -1\n", "must not be negative"},
 		{"invalid body_kb", minimal + "diff_log:\n  dir: /d\n  body_kb: -5\n", "body_kb must be"},
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/difflog"
 	"github.com/daedric/synapse-gopro-worker/internal/fedapi"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
+	"github.com/daedric/synapse-gopro-worker/internal/store"
 )
 
 // Build information, stamped by the Docker build via -ldflags. The defaults
@@ -71,6 +72,9 @@ func run() error {
 		return err
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	p, err := proxy.New(cfg.Upstream, log)
 	if err != nil {
 		return err
@@ -89,6 +93,15 @@ func run() error {
 	if err := difflog.Register(prometheus.DefaultRegisterer, diffs); err != nil {
 		return fmt.Errorf("register diff log metrics: %w", err)
 	}
+
+	// Opened whenever configured, even while every endpoint is still proxied,
+	// so a broken DSN or an unreachable socket surfaces at startup rather than
+	// on the first request served natively.
+	db, err := openDatabase(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
 
 	listener, err := listen(cfg.Listen)
 	if err != nil {
@@ -130,9 +143,6 @@ func run() error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	errs := make(chan error, 2)
 	go func() {
 		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -156,6 +166,48 @@ func run() error {
 	defer cancel()
 	_ = metricsSrv.Shutdown(shutdownCtx)
 	return srv.Shutdown(shutdownCtx)
+}
+
+// openDatabase connects to Synapse's database if configured, returning a nil
+// Store otherwise. A nil Store is safe to Close.
+func openDatabase(ctx context.Context, cfg *config.Config, log zerolog.Logger) (*store.Store, error) {
+	if !cfg.Database.Enabled() {
+		if cfg.NeedsDatabase() {
+			// Validation should have caught this; belt and braces.
+			return nil, fmt.Errorf("database.dsn is required for the configured endpoint modes")
+		}
+		log.Info().Msg("No database configured; serving every endpoint by proxy")
+		return nil, nil
+	}
+
+	timeout := time.Duration(cfg.Database.ConnectTimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	connectCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	db, err := store.Open(connectCtx, store.Config{
+		DSN:            cfg.Database.DSN,
+		MaxConns:       int32(cfg.Database.MaxConns),
+		ConnectTimeout: timeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	readOnly, err := db.IsReadOnly(ctx)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("verify read-only access: %w", err)
+	}
+	// Loud, because a writable role means a bug in this worker could damage a
+	// production Synapse database.
+	if !readOnly {
+		log.Warn().Msg("Database role is NOT read-only; see deploy/readonly-role.sql")
+	}
+	log.Info().Bool("read_only", readOnly).Msg("Connected to Synapse database")
+	return db, nil
 }
 
 func newLogger(cfg config.Log) (zerolog.Logger, error) {

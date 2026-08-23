@@ -71,3 +71,15 @@ func (s *Store) Close() {
 
 // Pool exposes the underlying pool for tests and metrics.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
+// IsReadOnly reports whether the connected role is restricted to reads.
+//
+// The worker is only ever meant to read a production Synapse database, so this
+// is checked at startup and reported rather than assumed.
+func (s *Store) IsReadOnly(ctx context.Context) (bool, error) {
+	var setting string
+	if err := s.pool.QueryRow(ctx, `SHOW default_transaction_read_only`).Scan(&setting); err != nil {
+		return false, fmt.Errorf("store: check read-only: %w", err)
+	}
+	return setting == "on", nil
+}

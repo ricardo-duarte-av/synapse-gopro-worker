@@ -28,6 +28,23 @@ upstream:
 metrics:
   addr: ":9200"
 
+# Read-only access to Synapse's PostgreSQL database.
+#
+# Required as soon as any endpoint leaves proxy mode; ignored (but harmless)
+# while everything is proxied. Leave it set so a broken DSN surfaces at startup
+# rather than on the first natively-served request.
+#
+# The unix socket needs no password and no network path. It is already visible
+# to the container through the /var/sockets mount that Postgres and Synapse
+# share.
+#
+# Create the role first:  psql -U synapse -d synapse-db -f deploy/readonly-role.sql
+database:
+  dsn: "host=/var/sockets user=gopro_ro dbname=synapse-db"
+  # Bounded well below Synapse's own pool so this worker cannot starve it.
+  max_conns: 16
+  connect_timeout_seconds: 10
+
 endpoints:
   # proxy       - forward to Synapse, return its answer (Phase 1)
   # shadow      - forward to Synapse and serve that, but also compute our own

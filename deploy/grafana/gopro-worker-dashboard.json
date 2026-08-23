@@ -553,7 +553,7 @@
     {
       "type": "timeseries",
       "title": "Upstream latency percentiles",
-      "description": "Time spent waiting on the Synapse worker, by endpoint.",
+      "description": "Time spent waiting on the Synapse worker, by endpoint. NOTE: this covers every request, including cancelled ones. To compare against the native implementation use the 'Native vs Synapse latency' panel, which measures both over the same requests.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1430,6 +1430,103 @@
           "legendFormat": "{{endpoint}}",
           "range": true,
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Native vs Synapse latency (same requests)",
+      "description": "The comparison the project exists to make. Both series cover ONLY the requests shadow comparison measured. Do not compare shadow_duration against gopro_upstream_duration_seconds: that one includes cancelled requests, which are skipped here and are by definition the slow ones, so it flatters the native implementation.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 24,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisLabel": "",
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            },
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_shadow_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "legendFormat": "native p50 {{endpoint}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_shadow_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "legendFormat": "native p99 {{endpoint}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_shadow_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "legendFormat": "synapse p50 {{endpoint}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_shadow_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "legendFormat": "synapse p99 {{endpoint}}",
+          "range": true,
+          "refId": "D"
         }
       ]
     },

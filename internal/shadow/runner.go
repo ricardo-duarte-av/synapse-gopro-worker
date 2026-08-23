@@ -146,7 +146,10 @@ func (r *Runner) run(req Request, proxy ProxyResult) {
 	nativeBody, nativeStatus, err := r.compute(ctx, req, origin)
 	elapsed := time.Since(start)
 
+	// Record both sides over the same set of requests, so the two are
+	// legitimately comparable.
 	shadowDuration.WithLabelValues(req.Endpoint).Observe(elapsed.Seconds())
+	shadowUpstreamDuration.WithLabelValues(req.Endpoint).Observe(proxy.Duration.Seconds())
 
 	if err != nil {
 		// An internal failure is a finding in its own right: it means the

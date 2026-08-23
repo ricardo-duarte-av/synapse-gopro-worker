@@ -1,0 +1,110 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// Event is a stored event with the metadata needed to serve it.
+type Event struct {
+	EventID     string
+	RoomID      string
+	Type        string
+	StateKey    *string
+	RoomVersion string
+	// JSON is the raw event as stored, which is what federation returns.
+	JSON []byte
+	// InternalMetadata is Synapse's private per-event metadata. It carries the
+	// outlier flag, which decides whether we know the state at this event.
+	InternalMetadata []byte
+	FormatVersion    int
+	// RejectedReason is non-empty for events that failed auth. They are still
+	// stored, and /event may return them, but they are not part of room state.
+	RejectedReason string
+}
+
+// IsStateEvent reports whether the event carries a state key.
+func (e *Event) IsStateEvent() bool { return e.StateKey != nil }
+
+// eventQuery mirrors Synapse's event fetch, joining the JSON blob, the room's
+// version and any rejection.
+const eventQuery = `
+	SELECT e.event_id, e.room_id, e.type, e.state_key,
+	       ej.json, ej.internal_metadata, ej.format_version,
+	       r.room_version, rej.reason
+	FROM events AS e
+	  JOIN event_json AS ej USING (event_id)
+	  LEFT JOIN rooms AS r ON r.room_id = e.room_id
+	  LEFT JOIN rejections AS rej USING (event_id)
+	WHERE e.event_id = ANY($1)`
+
+// GetEvent loads a single event, returning ErrNotFound if we do not have it.
+func (s *Store) GetEvent(ctx context.Context, eventID string) (*Event, error) {
+	events, err := s.GetEvents(ctx, []string{eventID})
+	if err != nil {
+		return nil, err
+	}
+	ev, ok := events[eventID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return ev, nil
+}
+
+// GetEvents loads events by ID. Events we do not have are simply absent from
+// the result, matching Synapse's behaviour.
+func (s *Store) GetEvents(ctx context.Context, eventIDs []string) (map[string]*Event, error) {
+	out := make(map[string]*Event, len(eventIDs))
+	if len(eventIDs) == 0 {
+		return out, nil
+	}
+
+	rows, err := s.pool.Query(ctx, eventQuery, eventIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: get events: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var e Event
+		var formatVersion *int
+		var roomVersion, rejected *string
+		if err := rows.Scan(&e.EventID, &e.RoomID, &e.Type, &e.StateKey,
+			&e.JSON, &e.InternalMetadata, &formatVersion, &roomVersion, &rejected); err != nil {
+			return nil, fmt.Errorf("store: scan event: %w", err)
+		}
+		if formatVersion != nil {
+			e.FormatVersion = *formatVersion
+		} else {
+			// A NULL format_version means the original room version 1 format.
+			e.FormatVersion = 1
+		}
+		if roomVersion != nil {
+			e.RoomVersion = *roomVersion
+		}
+		if rejected != nil {
+			e.RejectedReason = *rejected
+		}
+		out[e.EventID] = &e
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: event rows: %w", err)
+	}
+	return out, nil
+}
+
+// HasEvent reports whether we hold the event at all.
+func (s *Store) HasEvent(ctx context.Context, eventID string) (bool, error) {
+	var one int
+	err := s.pool.QueryRow(ctx, `SELECT 1 FROM events WHERE event_id = $1 LIMIT 1`, eventID).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: has event: %w", err)
+	}
+	return true, nil
+}

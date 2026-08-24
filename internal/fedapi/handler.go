@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -26,6 +27,11 @@ type Handler struct {
 	shadow  *shadow.Runner
 	limiter *ratelimit.Limiter
 	log     zerolog.Logger
+
+	// limitedOrigins tracks which servers have been rejected, so their count
+	// can be exported without exporting their names.
+	limitedMu      sync.Mutex
+	limitedOrigins map[string]struct{}
 
 	// captureLimit is how much of the proxied body to retain for comparison.
 	// A /state_ids response for a large room runs to several megabytes, so this
@@ -52,6 +58,19 @@ func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.
 // Limiter exposes the rate limiter for metrics and maintenance.
 func (h *Handler) Limiter() *ratelimit.Limiter { return h.limiter }
 
+// noteLimited records that an origin was rejected and returns how many distinct
+// origins have been. It answers "one noisy server or many?" without needing a
+// per-origin metric label.
+func (h *Handler) noteLimited(origin string) int {
+	h.limitedMu.Lock()
+	defer h.limitedMu.Unlock()
+	if h.limitedOrigins == nil {
+		h.limitedOrigins = make(map[string]struct{})
+	}
+	h.limitedOrigins[origin] = struct{}{}
+	return len(h.limitedOrigins)
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/health" {
 		w.WriteHeader(http.StatusOK)
@@ -76,15 +95,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// itself be used to generate load. Synapse limits on the claimed origin for
 	// the same reason.
 	origin := originFromAuth(r.Header.Get("Authorization"))
-	release, err := h.limiter.Acquire(r.Context(), origin)
+	release, outcome, err := h.limiter.Acquire(r.Context(), origin)
 	if err != nil {
 		if errors.Is(err, ratelimit.ErrLimitExceeded) {
 			metrics.RateLimitedTotal.WithLabelValues(string(route.Endpoint)).Inc()
 			metrics.RequestsTotal.WithLabelValues(string(route.Endpoint), mode.Kind, "429").Inc()
-			h.log.Debug().
+			metrics.RateLimitedOrigins.Set(float64(h.noteLimited(origin)))
+			// Logged at warn with the origin: metrics deliberately carry no
+			// per-origin label, so this is where "which server" is answered.
+			h.log.Warn().
 				Str("endpoint", string(route.Endpoint)).
 				Str("origin", origin).
-				Msg("Rejected by rate limit")
+				Str("uri", r.URL.RequestURI()).
+				Int("reject_limit", h.limiter.Settings().RejectLimit).
+				Int("concurrent", h.limiter.Settings().Concurrent).
+				Msg("Rate limited: rejected request")
 			writeLimitExceeded(w, h.limiter.Settings())
 			return
 		}
@@ -93,6 +118,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+
+	if outcome.Slept || outcome.Queued {
+		if outcome.Slept {
+			metrics.RateLimitSleptTotal.WithLabelValues(string(route.Endpoint)).Inc()
+		}
+		metrics.RateLimitQueueWait.WithLabelValues(string(route.Endpoint)).Observe(outcome.Wait.Seconds())
+		h.log.Info().
+			Str("endpoint", string(route.Endpoint)).
+			Str("origin", origin).
+			Bool("slept", outcome.Slept).
+			Bool("queued", outcome.Queued).
+			Dur("wait_ms", outcome.Wait).
+			Msg("Rate limited: delayed request")
+	}
 
 	// Shadow mode still serves Synapse's answer; it only needs the body kept
 	// so the comparison has something to check against.

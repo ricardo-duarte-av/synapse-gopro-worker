@@ -154,6 +154,29 @@ Requests"`, `retry_after_ms` of `window_size / sleep_limit`, and a `Retry-After`
 header rounded up to whole seconds — because remote servers back off on those
 fields rather than on the status alone.
 
+### Observing it
+
+| Signal | Where |
+| --- | --- |
+| Rejections and delays, by endpoint | `gopro_rate_limited_total`, `gopro_rate_limit_slept_total` |
+| Latency the limiter adds | `gopro_rate_limit_queue_wait_seconds` |
+| How many servers are affected | `gopro_rate_limited_origins`, `gopro_rate_limit_hosts` |
+| **Which** server | the worker log |
+
+There is deliberately no per-origin metric label. This server has exchanged keys
+with over forty thousand others, and one series per origin is the cardinality
+explosion Prometheus handles worst. Instead a rejection is logged at **warn**
+with the origin and URI, and a delayed request at **info** — logs carry high
+cardinality for free. `gopro_rate_limited_origins` answers "one noisy server or
+many?" without naming them.
+
+```sh
+docker logs av-gopro-worker-1 | grep "Rate limited"
+```
+
+Note that `gopro_rate_limit_queue_wait_seconds` is latency we *impose*, not
+latency we measure, so it is excluded from the native-versus-Synapse comparison.
+
 Limiting is applied on the *claimed* origin rather than a verified one.
 Verifying first would mean a network key fetch before the limiter runs, which
 would itself be a way to generate load; Synapse limits on the claimed origin for

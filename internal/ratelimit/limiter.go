@@ -84,20 +84,32 @@ type hostLimiter struct {
 	lastUsed time.Time
 }
 
+// Outcome describes what the limiter did to a request, for instrumentation.
+type Outcome struct {
+	// Slept reports that the request was deliberately delayed.
+	Slept bool
+	// Queued reports that the request waited behind others from the same server.
+	Queued bool
+	// Wait is the total time spent waiting, both sleeping and queued.
+	Wait time.Duration
+}
+
 // Acquire waits until a request from host may proceed.
 //
-// It returns a release function that must be called when the request finishes.
-// If the server has too much already waiting it returns ErrLimitExceeded
-// without waiting at all.
-func (l *Limiter) Acquire(ctx context.Context, host string) (func(), error) {
+// It returns a release function that must be called when the request finishes,
+// and an Outcome describing any delay applied. If the server has too much
+// already waiting it returns ErrLimitExceeded without waiting at all.
+func (l *Limiter) Acquire(ctx context.Context, host string) (func(), Outcome, error) {
 	// A limit of zero disables that stage, matching Synapse treating the
 	// feature as off.
 	if l.settings.RejectLimit == 0 && l.settings.Concurrent == 0 && l.settings.SleepLimit == 0 {
-		return func() {}, nil
+		return func() {}, Outcome{}, nil
 	}
 
 	h := l.hostLimiter(host)
 	now := l.clock.Now()
+	started := time.Now()
+	var outcome Outcome
 
 	h.mu.Lock()
 	h.lastUsed = now
@@ -107,7 +119,7 @@ func (l *Limiter) Acquire(ctx context.Context, host string) (func(), error) {
 	// request does not itself count towards the window.
 	if h.sleeping+h.queued > l.settings.RejectLimit {
 		h.mu.Unlock()
-		return nil, ErrLimitExceeded
+		return nil, outcome, ErrLimitExceeded
 	}
 
 	h.requestTimes = append(h.requestTimes, now)
@@ -118,12 +130,14 @@ func (l *Limiter) Acquire(ctx context.Context, host string) (func(), error) {
 	h.mu.Unlock()
 
 	if shouldSleep {
+		outcome.Slept = true
 		err := l.clock.Sleep(ctx, time.Duration(l.settings.SleepDelay)*time.Millisecond)
 		h.mu.Lock()
 		h.sleeping--
 		h.mu.Unlock()
 		if err != nil {
-			return nil, err
+			outcome.Wait = time.Since(started)
+			return nil, outcome, err
 		}
 	}
 
@@ -132,7 +146,8 @@ func (l *Limiter) Acquire(ctx context.Context, host string) (func(), error) {
 	if h.processing < l.settings.Concurrent {
 		h.processing++
 		h.mu.Unlock()
-		return l.releaseFunc(h), nil
+		outcome.Wait = time.Since(started)
+		return l.releaseFunc(h), outcome, nil
 	}
 
 	wait := make(chan struct{})
@@ -140,14 +155,17 @@ func (l *Limiter) Acquire(ctx context.Context, host string) (func(), error) {
 	h.queued++
 	h.mu.Unlock()
 
+	outcome.Queued = true
 	select {
 	case <-wait:
 		// The releasing request handed its slot over, so processing is already
 		// accounted for.
-		return l.releaseFunc(h), nil
+		outcome.Wait = time.Since(started)
+		return l.releaseFunc(h), outcome, nil
 	case <-ctx.Done():
 		h.abandon(wait)
-		return nil, ctx.Err()
+		outcome.Wait = time.Since(started)
+		return nil, outcome, ctx.Err()
 	}
 }
 

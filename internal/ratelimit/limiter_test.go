@@ -92,11 +92,11 @@ func TestConcurrentLimit(t *testing.T) {
 	}, newFakeClock())
 	ctx := context.Background()
 
-	r1, err := l.Acquire(ctx, "a.example")
+	r1, _, err := l.Acquire(ctx, "a.example")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2, err := l.Acquire(ctx, "a.example")
+	r2, _, err := l.Acquire(ctx, "a.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestConcurrentLimit(t *testing.T) {
 	// A third must block until one of the first two finishes.
 	started := make(chan struct{})
 	go func() {
-		r3, err := l.Acquire(ctx, "a.example")
+		r3, _, err := l.Acquire(ctx, "a.example")
 		if err == nil {
 			close(started)
 			r3()
@@ -133,7 +133,7 @@ func TestLimitIsPerHost(t *testing.T) {
 	}, newFakeClock())
 	ctx := context.Background()
 
-	r1, err := l.Acquire(ctx, "a.example")
+	r1, _, err := l.Acquire(ctx, "a.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestLimitIsPerHost(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		r2, err := l.Acquire(ctx, "b.example")
+		r2, _, err := l.Acquire(ctx, "b.example")
 		if err == nil {
 			r2()
 		}
@@ -164,7 +164,7 @@ func TestRejectsWhenTooManyWaiting(t *testing.T) {
 	defer cancel()
 
 	// Occupy the single processing slot.
-	r1, err := l.Acquire(ctx, "a.example")
+	r1, _, err := l.Acquire(ctx, "a.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestRejectsWhenTooManyWaiting(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r, err := l.Acquire(ctx, "a.example")
+			r, _, err := l.Acquire(ctx, "a.example")
 			switch {
 			case err == ErrLimitExceeded:
 				rejected.Add(1)
@@ -212,7 +212,7 @@ func TestSleepsPastTheWindowLimit(t *testing.T) {
 
 	// The first two requests within the window are not delayed.
 	for range 2 {
-		r, err := l.Acquire(ctx, "a.example")
+		r, _, err := l.Acquire(ctx, "a.example")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -223,7 +223,7 @@ func TestSleepsPastTheWindowLimit(t *testing.T) {
 	}
 
 	// The third exceeds it and is delayed.
-	r, err := l.Acquire(ctx, "a.example")
+	r, _, err := l.Acquire(ctx, "a.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestWindowExpiryStopsSleeping(t *testing.T) {
 	ctx := context.Background()
 
 	for range 3 {
-		r, _ := l.Acquire(ctx, "a.example")
+		r, _, _ := l.Acquire(ctx, "a.example")
 		r()
 	}
 	before := clock.sleepCount()
@@ -254,7 +254,7 @@ func TestWindowExpiryStopsSleeping(t *testing.T) {
 	}
 
 	clock.advance(2 * time.Second)
-	r, err := l.Acquire(ctx, "a.example")
+	r, _, err := l.Acquire(ctx, "a.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestCancelledRequestReleasesItsQueueSlot(t *testing.T) {
 		WindowSize: 1000, SleepLimit: 100, SleepDelay: 0, RejectLimit: 100, Concurrent: 1,
 	}, newFakeClock())
 
-	r1, err := l.Acquire(context.Background(), "a.example")
+	r1, _, err := l.Acquire(context.Background(), "a.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestCancelledRequestReleasesItsQueueSlot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := l.Acquire(ctx, "a.example")
+		_, _, err := l.Acquire(ctx, "a.example")
 		errCh <- err
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -299,7 +299,7 @@ func TestCancelledRequestReleasesItsQueueSlot(t *testing.T) {
 	// The limiter must still admit new work.
 	done := make(chan struct{})
 	go func() {
-		r, err := l.Acquire(context.Background(), "a.example")
+		r, _, err := l.Acquire(context.Background(), "a.example")
 		if err == nil {
 			r()
 		}
@@ -315,7 +315,7 @@ func TestCancelledRequestReleasesItsQueueSlot(t *testing.T) {
 func TestCleanupRemovesIdleHosts(t *testing.T) {
 	clock := newFakeClock()
 	l := NewWithClock(DefaultFederationSettings(), clock)
-	r, _ := l.Acquire(context.Background(), "a.example")
+	r, _, _ := l.Acquire(context.Background(), "a.example")
 	r()
 	if l.Hosts() != 1 {
 		t.Fatalf("Hosts = %d, want 1", l.Hosts())
@@ -339,7 +339,7 @@ func TestCleanupKeepsBusyHosts(t *testing.T) {
 	// accounting would be lost.
 	clock := newFakeClock()
 	l := NewWithClock(DefaultFederationSettings(), clock)
-	r, _ := l.Acquire(context.Background(), "a.example")
+	r, _, _ := l.Acquire(context.Background(), "a.example")
 	defer r()
 
 	clock.advance(2 * time.Hour)
@@ -361,7 +361,7 @@ func TestConcurrentUseIsSafe(t *testing.T) {
 			defer wg.Done()
 			host := []string{"a.example", "b.example"}[g%2]
 			for range 50 {
-				r, err := l.Acquire(ctx, host)
+				r, _, err := l.Acquire(ctx, host)
 				if err != nil {
 					continue
 				}

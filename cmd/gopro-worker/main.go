@@ -267,10 +267,20 @@ func openDatabase(ctx context.Context, cfg *config.Config, log zerolog.Logger) (
 		DSN:            cfg.Database.DSN,
 		MaxConns:       int32(cfg.Database.MaxConns),
 		ConnectTimeout: timeout,
+		Cache:          cfg.Database.Cache,
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	cacheSettings := cfg.Database.Cache.WithDefaults()
+	log.Info().
+		Int("state_groups_mb", cacheSettings.StateGroupsMB).
+		Int("events_mb", cacheSettings.EventsMB).
+		Int("event_state_groups_mb", cacheSettings.EventStateGroupsMB).
+		Int("auth_chains_mb", cacheSettings.AuthChainsMB).
+		Msg("Caching immutable data in process")
+	metrics.RegisterCaches(db.CacheStats)
 
 	readOnly, err := db.IsReadOnly(ctx)
 	if err != nil {

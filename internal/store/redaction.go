@@ -101,9 +101,18 @@ func (s *Store) applyRedactions(ctx context.Context, events map[string]*Event) e
 		if ev.Type == "m.room.create" {
 			continue
 		}
-		if redactionID, ok := shouldRedact(ev, rows, redactionEvents); ok {
-			ev.RedactedBy = redactionID
+		redactionID, ok := shouldRedact(ev, rows, redactionEvents)
+		if !ok {
+			continue
 		}
+		// Replace with a copy rather than mutating in place. The event may be
+		// a cached pointer shared with other in-flight requests, so writing to
+		// it would both race and stamp redaction state into the cache — where
+		// it would then be applied to an event whose redaction had not yet been
+		// checked.
+		redacted := *ev
+		redacted.RedactedBy = redactionID
+		events[id] = &redacted
 	}
 	return nil
 }

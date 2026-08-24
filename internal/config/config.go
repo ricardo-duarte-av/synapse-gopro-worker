@@ -9,6 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
 	"github.com/daedric/synapse-gopro-worker/internal/ratelimit"
 )
 
@@ -142,6 +143,8 @@ type Database struct {
 	MaxConns int `yaml:"max_conns"`
 	// ConnectTimeoutSeconds bounds the initial connection. Zero uses 10.
 	ConnectTimeoutSeconds int `yaml:"connect_timeout_seconds"`
+	// Cache bounds the in-process caches for immutable data.
+	Cache cache.Settings `yaml:"cache"`
 }
 
 // Enabled reports whether database access is configured.
@@ -286,6 +289,9 @@ func (c *Config) validate() error {
 	}
 	if c.Database.MaxConns < 0 || c.Database.ConnectTimeoutSeconds < 0 {
 		return fmt.Errorf("database: values must not be negative")
+	}
+	if err := c.Database.Cache.Validate(); err != nil {
+		return err
 	}
 	if c.Shadow.Concurrency < 0 || c.Shadow.TimeoutSeconds < 0 || c.Shadow.CaptureMB < 0 {
 		return fmt.Errorf("shadow: values must not be negative")

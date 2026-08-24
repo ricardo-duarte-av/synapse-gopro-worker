@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
 )
 
 // ErrNoChainCoverIndex reports that the chain cover index does not cover the
@@ -28,6 +30,13 @@ func (e ErrNoChainCoverIndex) Error() string {
 func (s *Store) GetAuthChainIDs(ctx context.Context, roomID string, eventIDs []string) ([]string, error) {
 	if len(eventIDs) == 0 {
 		return nil, nil
+	}
+
+	// The auth chain is a pure function of immutable events, so it is keyed by
+	// a hash of the input set.
+	key := cache.AuthChainKey(roomID, eventIDs)
+	if ids, ok := s.caches.authChains.Get(key); ok {
+		return ids, nil
 	}
 
 	// Step 1: the chain position of each starting event.
@@ -119,6 +128,7 @@ func (s *Store) GetAuthChainIDs(ctx context.Context, roomID string, eventIDs []s
 	if err := resultRows.Err(); err != nil {
 		return nil, fmt.Errorf("store: auth chain rows: %w", err)
 	}
+	s.caches.authChains.Add(key, out)
 	return out, nil
 }
 

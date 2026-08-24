@@ -45,6 +45,26 @@ database:
   max_conns: 16
   connect_timeout_seconds: 10
 
+  # In-process caches, bounded in megabytes rather than entry count: a resolved
+  # state map ranges from a few kilobytes for a small room to nearly a hundred
+  # megabytes for the largest, so an entry bound would not bound memory.
+  #
+  # Only immutable data is cached, so none of it needs invalidating: a state
+  # group's contents are fixed once written, stored event JSON does not change,
+  # and an auth chain is a function of immutable events. Membership, server
+  # ACLs and erasure are deliberately never cached, because those do change and
+  # we have no invalidation signal for them.
+  #
+  # state_groups is the one that matters. Measured on the largest room here,
+  # resolving its 145k-event state took 1.04s cold and 2us warm.
+  #
+  # Set a field to -1 to disable that cache; 0 takes the default.
+  cache:
+    state_groups_mb: 512
+    events_mb: 128
+    event_state_groups_mb: 32
+    auth_chains_mb: 64
+
 endpoints:
   # proxy       - forward to Synapse, return its answer (Phase 1)
   # shadow      - forward to Synapse and serve that, but also compute our own

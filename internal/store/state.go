@@ -17,6 +17,11 @@ type StateKey struct {
 
 // GetStateGroupForEvent returns the state group at an event.
 func (s *Store) GetStateGroupForEvent(ctx context.Context, eventID string) (int64, error) {
+	// An event's state group never changes once assigned.
+	if g, ok := s.caches.eventStateGroup.Get(eventID); ok {
+		return g, nil
+	}
+
 	var group *int64
 	err := s.pool.QueryRow(ctx,
 		`SELECT state_group FROM event_to_state_groups WHERE event_id = $1`, eventID).Scan(&group)
@@ -31,6 +36,7 @@ func (s *Store) GetStateGroupForEvent(ctx context.Context, eventID string) (int6
 		// not the state around it.
 		return 0, ErrNotFound
 	}
+	s.caches.eventStateGroup.Add(eventID, *group)
 	return *group, nil
 }
 
@@ -63,6 +69,13 @@ const stateGroupQuery = `
 // otherwise pathological on a large room. SET LOCAL scopes the change to the
 // transaction, which also makes it safe behind a transaction-mode pooler.
 func (s *Store) GetStateForGroup(ctx context.Context, group int64) (map[StateKey]string, error) {
+	// A state group's contents are fixed once written, so this needs no
+	// invalidation and is the single most valuable thing to cache: resolving
+	// state is by far the most expensive read we perform.
+	if state, ok := s.caches.stateGroups.Get(group); ok {
+		return state, nil
+	}
+
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, fmt.Errorf("store: begin: %w", err)
@@ -91,6 +104,7 @@ func (s *Store) GetStateForGroup(ctx context.Context, group int64) (map[StateKey
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: state rows: %w", err)
 	}
+	s.caches.stateGroups.Add(group, state)
 	return state, nil
 }
 

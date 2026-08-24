@@ -191,10 +191,33 @@ Verifying first would mean a network key fetch before the limiter runs, which
 would itself be a way to generate load; Synapse limits on the claimed origin for
 the same reason.
 
+## Caching
+
+Only **immutable** data is cached, which is what makes it safe without consuming
+Synapse's replication stream: a state group's contents are fixed once written,
+stored event JSON does not change, and an auth chain is a function of immutable
+events. None of it ever needs invalidating. Membership, server ACLs,
+partial-state status and erasure are deliberately never cached, because those do
+change and we have no signal telling us when.
+
+Caches are bounded by **bytes, not entry count**. A resolved state map ranges
+from a few kilobytes for a small room to nearly a hundred megabytes for the
+largest on this deployment, so an entry bound would either waste memory or fail
+to bound it.
+
+`state_groups` is the cache that matters. Resolving state at an event is by far
+the most expensive read this worker performs; measured against the largest room
+here, a 145k-event state group took **1.04s cold and 2µs warm**. That is the
+tail latency the whole project is trying to improve.
+
+Cache statistics are sampled on scrape from the cache itself rather than being
+incremented alongside it, so the metrics and the cache cannot disagree.
+
 ## Layout
 
 ```
 cmd/gopro-worker/     entry point
+internal/cache/       size-aware LRU for immutable data
 internal/config/      configuration and serving modes
 internal/proxy/       URI-preserving reverse proxy
 internal/fedapi/      routing and request handling

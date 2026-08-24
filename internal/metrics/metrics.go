@@ -4,6 +4,8 @@ package metrics
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
 )
 
 // latencyBuckets span the range that matters for these endpoints: /state_ids on
@@ -25,6 +27,50 @@ func RegisterRateLimitHosts(hosts func() int) {
 		Name:      "rate_limit_hosts",
 		Help:      "Origin servers with live rate limit state.",
 	}, func() float64 { return float64(hosts()) })
+}
+
+// RegisterCaches exports cache statistics, sampled on scrape.
+//
+// Cache counters live inside the cache itself rather than being incremented
+// alongside it, so the two can never disagree about what happened.
+func RegisterCaches(stats func() []cache.Stats) {
+	desc := func(name, help string) *prometheus.Desc {
+		return prometheus.NewDesc("gopro_cache_"+name, help, []string{"cache"}, nil)
+	}
+	c := &cacheCollector{
+		stats:     stats,
+		hits:      desc("hits_total", "Cache lookups served from memory."),
+		misses:    desc("misses_total", "Cache lookups that required a database read."),
+		evictions: desc("evictions_total", "Entries evicted to stay within the size bound."),
+		entries:   desc("entries", "Entries currently cached."),
+		bytes:     desc("bytes", "Approximate memory used by cached entries."),
+		maxBytes:  desc("max_bytes", "Configured size bound."),
+		hitRate:   desc("hit_rate", "Fraction of lookups served from memory since startup."),
+	}
+	prometheus.MustRegister(c)
+}
+
+type cacheCollector struct {
+	stats                                                      func() []cache.Stats
+	hits, misses, evictions, entries, bytes, maxBytes, hitRate *prometheus.Desc
+}
+
+func (c *cacheCollector) Describe(ch chan<- *prometheus.Desc) {
+	for _, d := range []*prometheus.Desc{c.hits, c.misses, c.evictions, c.entries, c.bytes, c.maxBytes, c.hitRate} {
+		ch <- d
+	}
+}
+
+func (c *cacheCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, s := range c.stats() {
+		ch <- prometheus.MustNewConstMetric(c.hits, prometheus.CounterValue, float64(s.Hits), s.Name)
+		ch <- prometheus.MustNewConstMetric(c.misses, prometheus.CounterValue, float64(s.Misses), s.Name)
+		ch <- prometheus.MustNewConstMetric(c.evictions, prometheus.CounterValue, float64(s.Evictions), s.Name)
+		ch <- prometheus.MustNewConstMetric(c.entries, prometheus.GaugeValue, float64(s.Entries), s.Name)
+		ch <- prometheus.MustNewConstMetric(c.bytes, prometheus.GaugeValue, float64(s.Bytes), s.Name)
+		ch <- prometheus.MustNewConstMetric(c.maxBytes, prometheus.GaugeValue, float64(s.MaxBytes), s.Name)
+		ch <- prometheus.MustNewConstMetric(c.hitRate, prometheus.GaugeValue, s.HitRate(), s.Name)
+	}
 }
 
 var (

@@ -12,11 +12,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
 )
 
-// Store holds a pool of read-only connections to Synapse's database.
+// Store holds a pool of read-only connections to Synapse's database, with
+// in-process caches for the data that cannot change.
 type Store struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	caches *caches
 }
 
 // Config describes how to reach the database.
@@ -29,6 +33,8 @@ type Config struct {
 	MaxConns int32
 	// ConnectTimeout bounds the initial connection.
 	ConnectTimeout time.Duration
+	// Cache bounds the in-process caches. Zero values take defaults.
+	Cache cache.Settings
 }
 
 // Open connects and verifies the database is reachable.
@@ -59,7 +65,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, caches: newCaches(cfg.Cache)}, nil
 }
 
 // Close releases the pool.

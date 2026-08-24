@@ -90,7 +90,25 @@ func (s *Store) getEventsRaw(ctx context.Context, eventIDs []string) (map[string
 		return out, nil
 	}
 
-	rows, err := s.pool.Query(ctx, eventQuery, eventIDs)
+	// Serve what is cached and query only the rest. Stored event JSON does not
+	// change; a later redaction is applied on top by GetEvents rather than by
+	// rewriting the cached event.
+	missing := eventIDs
+	if s.caches.events.Enabled() {
+		missing = make([]string, 0, len(eventIDs))
+		for _, id := range eventIDs {
+			if ev, ok := s.caches.events.Get(id); ok {
+				out[id] = ev
+				continue
+			}
+			missing = append(missing, id)
+		}
+		if len(missing) == 0 {
+			return out, nil
+		}
+	}
+
+	rows, err := s.pool.Query(ctx, eventQuery, missing)
 	if err != nil {
 		return nil, fmt.Errorf("store: get events: %w", err)
 	}
@@ -117,6 +135,7 @@ func (s *Store) getEventsRaw(ctx context.Context, eventIDs []string) (map[string
 			e.RejectedReason = *rejected
 		}
 		out[e.EventID] = &e
+		s.caches.events.Add(e.EventID, &e)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: event rows: %w", err)

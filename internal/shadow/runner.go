@@ -157,7 +157,20 @@ func (r *Runner) run(req Request, proxy ProxyResult) {
 	// Exercise verification before computing, so the auth layer accumulates
 	// evidence at the same time as the state logic. Its verdict is recorded
 	// separately and does not affect the state match rate.
-	origin := r.verifyOrigin(req, proxy)
+	origin, authErr := r.verifyOrigin(req, proxy)
+
+	// A request we would reject has the rejection as its answer. Computing a
+	// response for it instead would be doubly wrong: it uses an origin we just
+	// failed to verify, and it reports a disagreement on every request with a
+	// bad or expired signature, which is ordinary federation traffic rather
+	// than a defect. Where we reject and Synapse did not, that is still caught
+	// -- as a status mismatch here and as we_reject_synapse_accepts above.
+	if authErr != nil {
+		start := time.Now()
+		body, _ := json.Marshal(authErr)
+		r.finish(req, proxy, time.Since(start), body, authErr.Status)
+		return
+	}
 
 	start := time.Now()
 	nativeBody, nativeStatus, err := r.compute(ctx, req, origin)
@@ -183,6 +196,11 @@ func (r *Runner) run(req Request, proxy ProxyResult) {
 		return
 	}
 
+	r.finish(req, proxy, elapsed, nativeBody, nativeStatus)
+}
+
+// finish compares a native answer against Synapse's and records the outcome.
+func (r *Runner) finish(req Request, proxy ProxyResult, elapsed time.Duration, nativeBody []byte, nativeStatus int) {
 	agree, compareBodies := CompareStatus(proxy.Status, nativeStatus)
 	if !agree {
 		r.record(req, proxy, elapsed, &difflog.Record{
@@ -206,12 +224,12 @@ func (r *Runner) run(req Request, proxy ProxyResult) {
 		return
 	}
 
-	diff, err := r.diff(req.Endpoint, proxy.Body, nativeBody)
-	if err != nil {
+	diff, diffErr := r.diff(req.Endpoint, proxy.Body, nativeBody)
+	if diffErr != nil {
 		r.record(req, proxy, elapsed, &difflog.Record{
 			Kind:         difflog.KindNativeError,
 			NativeStatus: nativeStatus,
-			NativeError:  err.Error(),
+			NativeError:  diffErr.Error(),
 			NativeBody:   nativeBody,
 		})
 		return
@@ -238,15 +256,17 @@ func (r *Runner) run(req Request, proxy ProxyResult) {
 // is evidence rather than an outage. It is nonetheless the gate on native
 // serving: accepting a request Synapse would have rejected is a security
 // failure, not merely a wrong answer.
-func (r *Runner) verifyOrigin(req Request, proxy ProxyResult) string {
+func (r *Runner) verifyOrigin(req Request, proxy ProxyResult) (string, *matrixstate.MatrixError) {
 	if r.verifier == nil {
-		return req.Origin
+		return req.Origin, nil
 	}
 
 	synth, err := synthesiseRequest(req)
 	if err != nil {
+		// Without a replayable request we cannot judge authentication, so fall
+		// back to comparing the response alone.
 		authVerdicts.WithLabelValues("replay_failed").Inc()
-		return req.Origin
+		return req.Origin, nil
 	}
 
 	result := r.verifier.Verify(synth)
@@ -269,9 +289,13 @@ func (r *Runner) verifyOrigin(req Request, proxy ProxyResult) string {
 	}
 
 	if result.OK() {
-		return result.Origin
+		return result.Origin, nil
 	}
-	return req.Origin
+	return req.Origin, &matrixstate.MatrixError{
+		Status:  result.Status(),
+		ErrCode: result.Err.ErrCode,
+		Message: result.Err.Err,
+	}
 }
 
 // synthesiseRequest rebuilds enough of the original request to verify its

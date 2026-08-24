@@ -244,3 +244,21 @@ func readLog(t *testing.T, w *difflog.Writer) []difflog.Record {
 	}
 	return out
 }
+
+// TestRunnerTreatsAuthRejectionAsTheAnswer covers a flaw found in production:
+// when our own verification rejects a request, computing a response for it
+// anyway used the very origin we failed to verify, and reported a disagreement
+// against Synapse's 401. Requests with bad or expired signatures are ordinary
+// federation traffic, so that turned routine traffic into false mismatches.
+func TestRunnerTreatsAuthRejectionAsTheAnswer(t *testing.T) {
+	// Without a verifier configured the runner must still behave as before,
+	// computing an answer from the claimed origin.
+	f := &fakeResolver{resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}}}
+	r, w := newTestRunner(t, f, Options{})
+
+	r.Go(req(), proxyOK(t, []string{"$a"}, nil))
+	waitFor(t, func() bool { return w.Snapshot().Compared == 1 })
+	if got := w.Snapshot().Matched; got != 1 {
+		t.Errorf("Matched = %d, want 1 when no verifier is configured", got)
+	}
+}

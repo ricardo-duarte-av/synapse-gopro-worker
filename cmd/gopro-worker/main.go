@@ -24,6 +24,7 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/fedapi"
 	"github.com/daedric/synapse-gopro-worker/internal/fedauth"
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
+	"github.com/daedric/synapse-gopro-worker/internal/metrics"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
 	"github.com/daedric/synapse-gopro-worker/internal/shadow"
 	"github.com/daedric/synapse-gopro-worker/internal/store"
@@ -157,8 +158,35 @@ func run() error {
 			Msg("Shadow comparison enabled")
 	}
 
+	handler := fedapi.New(cfg, p, runner, log)
+
+	rc := handler.Limiter().Settings()
+	log.Info().
+		Int("window_size", rc.WindowSize).
+		Int("sleep_limit", rc.SleepLimit).
+		Int("sleep_delay", rc.SleepDelay).
+		Int("reject_limit", rc.RejectLimit).
+		Int("concurrent", rc.Concurrent).
+		Msg("Federation rate limiting active")
+
+	// Discard state for servers we have not heard from, so a one-off contact
+	// does not occupy memory indefinitely.
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				handler.Limiter().Cleanup(time.Hour)
+				metrics.RateLimitHosts.Set(float64(handler.Limiter().Hosts()))
+			}
+		}
+	}()
+
 	srv := &http.Server{
-		Handler: fedapi.New(cfg, p, runner, log),
+		Handler: handler,
 		// Federation clients are remote servers over the open internet; keep
 		// header reads bounded but allow slow large-state responses to drain.
 		ReadHeaderTimeout: 20 * time.Second,

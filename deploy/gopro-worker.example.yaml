@@ -97,6 +97,29 @@ auth:
     - beeper.com
     - keys.aguiarvieira.pt
 
+# Per-origin federation rate limiting.
+#
+# The syntax mirrors Synapse's rc_federation exactly, so this block can be
+# copied straight from homeserver.yaml. Keep the two in step: if ours is looser
+# than Synapse's we accept load Synapse would shed, and if it is tighter we
+# throttle servers Synapse would answer.
+#
+# Omit the block entirely to get Synapse's defaults (window_size 1000,
+# sleep_limit 10, sleep_delay 500, reject_limit 50, concurrent 3). Individual
+# fields default independently, so setting one does not zero the others.
+#
+#   window_size   milliseconds over which a server's requests are counted
+#   sleep_limit   requests in that window before further ones are delayed
+#   sleep_delay   how long, in milliseconds, a delayed request waits
+#   reject_limit  requests waiting (asleep or queued) before we answer 429
+#   concurrent    requests from one server processed at once
+rc_federation:
+  window_size: 1000
+  sleep_limit: 4
+  sleep_delay: 1000
+  reject_limit: 10
+  concurrent: 2
+
 # Tuning for shadow comparison. Only used when an endpoint is past proxy mode.
 shadow:
   # Bounds simultaneous native computations, so comparison cannot exhaust the

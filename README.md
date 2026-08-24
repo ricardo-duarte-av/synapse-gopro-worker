@@ -126,14 +126,38 @@ the dangerous direction and must be zero before anything is served natively.
 
 ## Known gaps before native serving
 
-- **No federation rate limiting.** Synapse applies `rc_federation` per origin
-  and answers 429 when a server exceeds it; this worker does not, and would
-  serve requests Synapse would have throttled. Observed live during a load
-  test. This is an availability concern rather than a correctness or
-  disclosure one, and it must be closed before any endpoint is served
-  natively.
-- **`/state` has no native implementation.** It receives no traffic on the
-  deployment this was built against.
+- **`/state` is not served here.** It is left routed directly to Synapse: a
+  single call on a large room returns tens of megabytes (97 MB for the largest
+  room measured), which needs a streaming encoder rather than the in-memory
+  response model used by the other endpoints. It also sees almost no traffic,
+  because a joining server receives room state in the `send_join` response
+  rather than by calling `/state`.
+
+## Rate limiting
+
+Per-origin rate limiting is ported from Synapse's `FederationRateLimiter`, and
+the configuration block is `rc_federation` with Synapse's own field names, so
+settings can be copied from `homeserver.yaml` without translation. Keep the two
+in step: looser than Synapse and we accept load Synapse would shed; tighter and
+we throttle servers Synapse would answer.
+
+Three stages, in Synapse's order:
+
+1. **reject** — if too many of a server's requests are already waiting, answer
+   429 immediately, before the request is even counted towards the window;
+2. **sleep** — if the server has exceeded `sleep_limit` within `window_size`,
+   delay this request by `sleep_delay`;
+3. **queue** — allow only `concurrent` of a server's requests to run at once.
+
+The 429 carries Synapse's exact shape — `M_LIMIT_EXCEEDED`, `"Too Many
+Requests"`, `retry_after_ms` of `window_size / sleep_limit`, and a `Retry-After`
+header rounded up to whole seconds — because remote servers back off on those
+fields rather than on the status alone.
+
+Limiting is applied on the *claimed* origin rather than a verified one.
+Verifying first would mean a network key fetch before the limiter runs, which
+would itself be a way to generate load; Synapse limits on the claimed origin for
+the same reason.
 
 ## Layout
 

@@ -1,6 +1,7 @@
 package fedapi
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/metrics"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
+	"github.com/daedric/synapse-gopro-worker/internal/ratelimit"
 	"github.com/daedric/synapse-gopro-worker/internal/shadow"
 )
 
@@ -19,10 +21,11 @@ import (
 // mode already threads through so that shadow and native serving can be added
 // without reshaping the request path.
 type Handler struct {
-	cfg    *config.Config
-	proxy  *proxy.Proxy
-	shadow *shadow.Runner
-	log    zerolog.Logger
+	cfg     *config.Config
+	proxy   *proxy.Proxy
+	shadow  *shadow.Runner
+	limiter *ratelimit.Limiter
+	log     zerolog.Logger
 
 	// captureLimit is how much of the proxied body to retain for comparison.
 	// A /state_ids response for a large room runs to several megabytes, so this
@@ -36,8 +39,18 @@ func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.
 	if limit <= 0 {
 		limit = 32 << 20
 	}
-	return &Handler{cfg: cfg, proxy: p, shadow: runner, log: log, captureLimit: limit}
+	return &Handler{
+		cfg:          cfg,
+		proxy:        p,
+		shadow:       runner,
+		limiter:      ratelimit.New(cfg.RCFederation),
+		log:          log,
+		captureLimit: limit,
+	}
 }
+
+// Limiter exposes the rate limiter for metrics and maintenance.
+func (h *Handler) Limiter() *ratelimit.Limiter { return h.limiter }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/health" {
@@ -57,6 +70,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := h.modeFor(route.Endpoint)
 	start := time.Now()
 
+	// Rate limit per origin, as Synapse does. The origin here is the one
+	// claimed in the X-Matrix header rather than a verified one: verification
+	// costs a network key fetch, and a limiter that had to do that first could
+	// itself be used to generate load. Synapse limits on the claimed origin for
+	// the same reason.
+	origin := originFromAuth(r.Header.Get("Authorization"))
+	release, err := h.limiter.Acquire(r.Context(), origin)
+	if err != nil {
+		if errors.Is(err, ratelimit.ErrLimitExceeded) {
+			metrics.RateLimitedTotal.WithLabelValues(string(route.Endpoint)).Inc()
+			metrics.RequestsTotal.WithLabelValues(string(route.Endpoint), mode.Kind, "429").Inc()
+			h.log.Debug().
+				Str("endpoint", string(route.Endpoint)).
+				Str("origin", origin).
+				Msg("Rejected by rate limit")
+			writeLimitExceeded(w, h.limiter.Settings())
+			return
+		}
+		// The client went away while queued; there is nobody left to answer.
+		metrics.RequestsTotal.WithLabelValues(string(route.Endpoint), mode.Kind, "canceled").Inc()
+		return
+	}
+	defer release()
+
 	// Shadow mode still serves Synapse's answer; it only needs the body kept
 	// so the comparison has something to check against.
 	var capture int64
@@ -73,7 +110,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.shadow.Go(
 			shadow.Request{
 				Endpoint: string(route.Endpoint),
-				Origin:   originFromAuth(r.Header.Get("Authorization")),
+				Origin:   origin,
 				RoomID:   roomIDFor(route),
 				EventID:  eventIDFor(route, r),
 				URI:      r.URL.RequestURI(),

@@ -37,6 +37,21 @@ var (
 		Help:      "Requests that failed to reach the upstream Synapse worker.",
 	}, []string{"endpoint", "backend"})
 
+	// RateLimitedTotal counts requests refused by the per-origin rate limit.
+	RateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "gopro",
+		Name:      "rate_limited_total",
+		Help:      "Requests rejected with 429 by the per-origin federation rate limit.",
+	}, []string{"endpoint"})
+
+	// RateLimitHosts reports how many origin servers currently have rate limit
+	// state, which is also a rough measure of how many servers are talking to us.
+	RateLimitHosts = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "gopro",
+		Name:      "rate_limit_hosts",
+		Help:      "Origin servers with live rate limit state.",
+	})
+
 	// ResponseBytes observes response sizes, which drive the cost of /state.
 	ResponseBytes = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "gopro",

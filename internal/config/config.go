@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/daedric/synapse-gopro-worker/internal/ratelimit"
 )
 
 // Mode selects how a given endpoint is served.
@@ -87,6 +89,10 @@ type Config struct {
 	Database  Database  `yaml:"database"`
 	Shadow    Shadow    `yaml:"shadow"`
 	Auth      Auth      `yaml:"auth"`
+
+	// RCFederation mirrors Synapse's rc_federation block, so the settings can
+	// be copied across without translation.
+	RCFederation ratelimit.FederationSettings `yaml:"rc_federation"`
 }
 
 // Auth tunes X-Matrix request verification.
@@ -286,6 +292,9 @@ func (c *Config) validate() error {
 	}
 	if c.Auth.KeyRefetchMinutes < 0 || c.Auth.TimeoutSeconds < 0 {
 		return fmt.Errorf("auth: values must not be negative")
+	}
+	if err := c.RCFederation.Validate(); err != nil {
+		return err
 	}
 
 	for name, m := range c.Endpoints.byName() {

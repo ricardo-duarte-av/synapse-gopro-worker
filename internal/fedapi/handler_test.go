@@ -2,11 +2,13 @@ package fedapi
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
+	"github.com/daedric/synapse-gopro-worker/internal/ratelimit"
 )
 
 // TestHandlerEndToEnd drives the full path a real request takes: raw bytes on a
@@ -152,4 +155,125 @@ func rawGet(t *testing.T, addr, uri, auth string) (int, string) {
 		t.Fatal(err)
 	}
 	return resp.StatusCode, buf.String()
+}
+
+// TestRateLimitRejectsWithSynapseShape checks the 429 we send matches
+// Synapse's, since remote servers back off on its fields rather than on the
+// status alone.
+func TestRateLimitRejectsWithSynapseShape(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hold the request open so the limiter's slots stay occupied.
+		time.Sleep(2 * time.Second)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event:    config.Mode{Kind: config.ModeProxy},
+			State:    config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeProxy},
+		},
+		// Tight enough that a couple of parallel requests trip it.
+		RCFederation: ratelimit.FederationSettings{
+			WindowSize: 1000, SleepLimit: 100, SleepDelay: 0, RejectLimit: 1, Concurrent: 1,
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop()))
+	defer front.Close()
+
+	const auth = `X-Matrix origin="noisy.example",destination="example.com",key="ed25519:a",sig="x"`
+	uri := "/_matrix/federation/v1/state_ids/%21r%3Aex?event_id=%24e"
+
+	// Fire several in parallel from one origin; at least one must be refused.
+	var mu sync.Mutex
+	var got429 bool
+	var body string
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			status, b := rawGet(t, front.Listener.Addr().String(), uri, auth)
+			if status == http.StatusTooManyRequests {
+				mu.Lock()
+				got429, body = true, b
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if !got429 {
+		t.Fatal("no request was rate limited")
+	}
+
+	var parsed struct {
+		ErrCode      string `json:"errcode"`
+		Error        string `json:"error"`
+		RetryAfterMS int    `json:"retry_after_ms"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("429 body is not valid JSON: %v (%q)", err, body)
+	}
+	if parsed.ErrCode != "M_LIMIT_EXCEEDED" {
+		t.Errorf("errcode = %q, want M_LIMIT_EXCEEDED", parsed.ErrCode)
+	}
+	if parsed.Error != "Too Many Requests" {
+		t.Errorf("error = %q, want Synapse's wording", parsed.Error)
+	}
+	// window_size / sleep_limit, as Synapse reports.
+	if parsed.RetryAfterMS != 10 {
+		t.Errorf("retry_after_ms = %d, want 10", parsed.RetryAfterMS)
+	}
+}
+
+// TestRateLimitIsPerOrigin checks a noisy server cannot throttle a quiet one.
+func TestRateLimitIsPerOrigin(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Test-Slow") != "" {
+			<-release
+		}
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints:  config.Endpoints{StateIDs: config.Mode{Kind: config.ModeProxy}},
+		RCFederation: ratelimit.FederationSettings{
+			WindowSize: 1000, SleepLimit: 100, SleepDelay: 0, RejectLimit: 100, Concurrent: 1,
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop()))
+	defer front.Close()
+
+	uri := "/_matrix/federation/v1/state_ids/%21r%3Aex?event_id=%24e"
+
+	// A different origin must be served promptly regardless.
+	done := make(chan int, 1)
+	go func() {
+		status, _ := rawGet(t, front.Listener.Addr().String(),
+			uri, `X-Matrix origin="quiet.example",destination="example.com",key="ed25519:a",sig="x"`)
+		done <- status
+	}()
+	select {
+	case status := <-done:
+		if status != http.StatusOK {
+			t.Errorf("quiet origin got %d, want 200", status)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("a quiet origin was blocked by another server's limit")
+	}
 }

@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/daedric/synapse-gopro-worker/internal/ratelimit"
 )
 
 const minimal = `
@@ -171,5 +173,54 @@ func TestParseRejectsBadInput(t *testing.T) {
 				t.Errorf("error = %q, want it to mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestRCFederationCopiedFromSynapse checks a Synapse rc_federation block can be
+// pasted into our config unchanged. That is the point of mirroring the syntax:
+// an operator should never have to keep two differently-shaped settings in
+// step, because drift between them means we throttle where Synapse does not.
+func TestRCFederationCopiedFromSynapse(t *testing.T) {
+	// Copied verbatim from a Synapse homeserver.yaml.
+	cfg, err := parse([]byte(minimal + `
+rc_federation:
+  window_size: 1000
+  sleep_limit: 4
+  sleep_delay: 1000
+  reject_limit: 10
+  concurrent: 2
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.RCFederation
+	want := ratelimit.FederationSettings{
+		WindowSize: 1000, SleepLimit: 4, SleepDelay: 1000, RejectLimit: 10, Concurrent: 2,
+	}
+	if got != want {
+		t.Errorf("rc_federation = %+v, want %+v", got, want)
+	}
+}
+
+func TestRCFederationDefaultsWhenAbsent(t *testing.T) {
+	cfg, err := parse([]byte(minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Left zero in config; Synapse's defaults are applied by the limiter so an
+	// absent block behaves exactly as Synapse would with none configured.
+	l := ratelimit.New(cfg.RCFederation)
+	if l.Settings() != ratelimit.DefaultFederationSettings() {
+		t.Errorf("settings = %+v, want Synapse's defaults", l.Settings())
+	}
+}
+
+func TestRCFederationRejectsNegative(t *testing.T) {
+	_, err := parse([]byte(minimal + "rc_federation:\n  concurrent: -1\n"))
+	if err == nil {
+		t.Fatal("expected an error for a negative value")
+	}
+	if !strings.Contains(err.Error(), "rc_federation") {
+		t.Errorf("error = %q, want it to name rc_federation", err)
 	}
 }

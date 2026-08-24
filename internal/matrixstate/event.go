@@ -202,19 +202,57 @@ func redactEvent(ev *store.Event) ([]byte, error) {
 		roomVersion = id.RoomV1
 	}
 
+	var redacted []byte
+	var err error
 	if usesV1EventFormat(roomVersion) {
 		var p pdu.RoomV1PDU
 		if err := json.Unmarshal(ev.JSON, &p); err != nil {
 			return nil, fmt.Errorf("parse v1 pdu: %w", err)
 		}
-		return json.Marshal(p.Redact(roomVersion))
+		redacted, err = json.Marshal(p.Redact(roomVersion))
+	} else {
+		var p pdu.PDU
+		if err := json.Unmarshal(ev.JSON, &p); err != nil {
+			return nil, fmt.Errorf("parse pdu: %w", err)
+		}
+		redacted, err = json.Marshal(p.Redact(roomVersion))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("encode redacted pdu: %w", err)
+	}
+	return restorePrunedUnsigned(ev.JSON, redacted)
+}
+
+// prunedUnsignedFields are the unsigned keys that survive redaction.
+//
+// mautrix's Redact drops unsigned wholesale, but Synapse's prune_event_dict
+// rebuilds it and copies these two across, so a redacted event keeps its age
+// and the ID of the state event it replaced. Dropping them served "unsigned":
+// {} where Synapse served replaces_state.
+var prunedUnsignedFields = []string{"age_ts", "replaces_state"}
+
+// restorePrunedUnsigned copies the fields Synapse keeps through redaction from
+// the stored event onto the redacted one.
+func restorePrunedUnsigned(original, redacted []byte) ([]byte, error) {
+	var ev struct {
+		Unsigned map[string]json.RawMessage `json:"unsigned"`
+	}
+	if err := json.Unmarshal(original, &ev); err != nil {
+		return nil, fmt.Errorf("parse stored unsigned: %w", err)
 	}
 
-	var p pdu.PDU
-	if err := json.Unmarshal(ev.JSON, &p); err != nil {
-		return nil, fmt.Errorf("parse pdu: %w", err)
+	unsigned := map[string]json.RawMessage{}
+	for _, field := range prunedUnsignedFields {
+		if v, ok := ev.Unsigned[field]; ok {
+			unsigned[field] = v
+		}
 	}
-	return json.Marshal(p.Redact(roomVersion))
+
+	encoded, err := json.Marshal(unsigned)
+	if err != nil {
+		return nil, err
+	}
+	return sjson.SetRawBytes(redacted, "unsigned", encoded)
 }
 
 // usesV1EventFormat reports whether a room version uses the original event

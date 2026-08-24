@@ -3,13 +3,12 @@
 package shadow
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"sort"
 
 	"github.com/daedric/synapse-gopro-worker/internal/difflog"
+	"github.com/daedric/synapse-gopro-worker/internal/pducmp"
 )
 
 // stateIDsBody is the /state_ids response shape.
@@ -156,30 +155,10 @@ func indexPDUs(pdus []json.RawMessage) map[string]json.RawMessage {
 	return out
 }
 
-// equalPDU compares two events, ignoring the value of the age field while still
-// requiring both sides to agree on whether it is present.
-func equalPDU(a, b json.RawMessage) bool {
-	na, okA := normalisePDU(a)
-	nb, okB := normalisePDU(b)
-	if !okA || !okB {
-		return bytes.Equal(a, b)
-	}
-	return reflect.DeepEqual(na, nb)
-}
-
-// normalisePDU decodes an event and replaces the wall-clock-dependent age with
-// a marker, so presence is compared but the value is not.
-func normalisePDU(raw json.RawMessage) (map[string]any, bool) {
-	var ev map[string]any
-	if err := json.Unmarshal(raw, &ev); err != nil {
-		return nil, false
-	}
-	if unsigned, ok := ev["unsigned"].(map[string]any); ok {
-		if _, has := unsigned["age"]; has {
-			unsigned["age"] = "<age>"
-		}
-	}
-	return ev, true
+// equalPDU compares two events. The rules live in pducmp so the diff-log
+// replay test applies exactly the same ones.
+func equalPDU(synapse, native json.RawMessage) bool {
+	return pducmp.Equal(synapse, native)
 }
 
 // CompareStatus reports whether two responses agree at the HTTP level, and

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+
+	"github.com/daedric/synapse-gopro-worker/internal/pducmp"
 )
 
 // TestLiveReplayDiffLog re-runs recorded mismatches against the current code.
@@ -93,35 +95,32 @@ func TestLiveReplayDiffLog(t *testing.T) {
 	}
 }
 
-// pdusAgree compares the PDUs of two transaction bodies, ignoring the
-// wall-clock-dependent age and origin_server_ts values while still requiring
-// both sides to agree on whether age is present.
+// pdusAgree compares the PDUs of two transaction bodies using the same rules
+// the live shadow comparator applies, so a replay result means what a shadow
+// run would have meant.
 func pdusAgree(t *testing.T, synapseBody, nativeBody []byte) bool {
 	t.Helper()
-	syn := normaliseTransaction(synapseBody)
-	nat := normaliseTransaction(nativeBody)
-	a, _ := json.Marshal(syn)
-	b, _ := json.Marshal(nat)
-	return string(a) == string(b)
+	syn := transactionPDUs(synapseBody)
+	nat := transactionPDUs(nativeBody)
+	if len(syn) != len(nat) {
+		return false
+	}
+	for i := range syn {
+		if !pducmp.Equal(syn[i], nat[i]) {
+			return false
+		}
+	}
+	return true
 }
 
-func normaliseTransaction(body []byte) []any {
+func transactionPDUs(body []byte) []json.RawMessage {
 	var tx struct {
-		PDUs []map[string]any `json:"pdus"`
+		PDUs []json.RawMessage `json:"pdus"`
 	}
 	if err := json.Unmarshal(body, &tx); err != nil {
 		return nil
 	}
-	out := make([]any, 0, len(tx.PDUs))
-	for _, pdu := range tx.PDUs {
-		if unsigned, ok := pdu["unsigned"].(map[string]any); ok {
-			if _, has := unsigned["age"]; has {
-				unsigned["age"] = "<age>"
-			}
-		}
-		out = append(out, pdu)
-	}
-	return out
+	return tx.PDUs
 }
 
 func firstPDU(body []byte) string {

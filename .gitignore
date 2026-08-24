@@ -33,3 +33,6 @@ go.work.sum
 
 # Local working notes, not shared.
 CLAUDE.md
+
+# Claude Code session artifacts
+.claude/checkpoints/

@@ -140,3 +140,40 @@ func TestDecodeParam(t *testing.T) {
 		}
 	}
 }
+
+// Synapse's client-facing reads stamp prev_content/prev_sender into the shared
+// cached event, so /event sometimes carries them even though get_persisted_pdu
+// never asks for them. Tolerated upstream-only, since we cannot observe what
+// polluted Synapse's cache -- but never tolerated in our own output.
+func TestSynapseOnlyPrevContentIsTolerated(t *testing.T) {
+	const nativePDU = `{"event_id":"$a","type":"m.room.member","unsigned":{"replaces_state":"$old"}}`
+	synapse := []byte(`{"origin":"h","origin_server_ts":1,"pdus":[{"event_id":"$a","type":"m.room.member","unsigned":{"replaces_state":"$old","prev_content":{"membership":"leave"},"prev_sender":"@u:x"}}]}`)
+	native := []byte(`{"origin":"h","origin_server_ts":1,"pdus":[` + nativePDU + `]}`)
+
+	diff, err := CompareEvent(synapse, native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff != nil {
+		t.Errorf("upstream-only prev_content reported as a mismatch: %+v", diff)
+	}
+
+	// The reverse is still our bug: we must not invent these fields.
+	diff, err = CompareEvent(native, synapse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff == nil {
+		t.Error("prev_content present only in our answer was not reported")
+	}
+
+	// And a genuine unsigned difference is still caught.
+	other := []byte(`{"origin":"h","origin_server_ts":1,"pdus":[{"event_id":"$a","type":"m.room.member","unsigned":{"replaces_state":"$different"}}]}`)
+	diff, err = CompareEvent(other, native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff == nil {
+		t.Error("a real replaces_state difference was not reported")
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,10 +172,13 @@ func TestRateLimitRejectsWithSynapseShape(t *testing.T) {
 	cfg := &config.Config{
 		ServerName: "example.com",
 		Endpoints: config.Endpoints{
-			Event:    config.Mode{Kind: config.ModeProxy},
-			State:    config.Mode{Kind: config.ModeProxy},
-			StateIDs: config.Mode{Kind: config.ModeProxy},
+			Event: config.Mode{Kind: config.ModeProxy},
+			State: config.Mode{Kind: config.ModeProxy},
+			// Native mode, because the limiter only applies to requests we
+			// answer ourselves.
+			StateIDs: config.Mode{Kind: config.ModeNative},
 		},
+		Database: config.Database{DSN: "unused"},
 		// Tight enough that a couple of parallel requests trip it.
 		RCFederation: ratelimit.FederationSettings{
 			WindowSize: 1000, SleepLimit: 100, SleepDelay: 0, RejectLimit: 1, Concurrent: 1,
@@ -275,5 +279,59 @@ func TestRateLimitIsPerOrigin(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Error("a quiet origin was blocked by another server's limit")
+	}
+}
+
+// TestNoRateLimitWhileProxying is the point of making the limiter mode-aware.
+//
+// While proxying or shadowing, Synapse answers every request and its own
+// limiter already protects it. Applying ours as well would put each request
+// through two limiters in series, delaying traffic Synapse would have served
+// and inflating the upstream latency the shadow comparison is trying to
+// measure.
+func TestNoRateLimitWhileProxying(t *testing.T) {
+	var served atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served.Add(1)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer upstream.Close()
+
+	for _, mode := range []string{config.ModeProxy, config.ModeShadow} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := &config.Config{
+				ServerName: "example.com",
+				Endpoints:  config.Endpoints{StateIDs: config.Mode{Kind: mode}},
+				// Limits so tight that any application of them would reject.
+				RCFederation: ratelimit.FederationSettings{
+					WindowSize: 100000, SleepLimit: 1, SleepDelay: 5000,
+					RejectLimit: 1, Concurrent: 1,
+				},
+			}
+			p, err := proxy.New(config.Upstream{
+				Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")},
+			}, zerolog.Nop())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// No shadow runner, so shadow mode simply proxies here.
+			front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop()))
+			defer front.Close()
+
+			const auth = `X-Matrix origin="noisy.example",destination="example.com",key="ed25519:a",sig="x"`
+			uri := "/_matrix/federation/v1/state_ids/%21r%3Aex?event_id=%24e"
+
+			// Every request must be served promptly and none rejected.
+			start := time.Now()
+			for range 10 {
+				status, _ := rawGet(t, front.Listener.Addr().String(), uri, auth)
+				if status != http.StatusOK {
+					t.Fatalf("%s mode returned %d; the limiter must not apply when Synapse answers", mode, status)
+				}
+			}
+			if elapsed := time.Since(start); elapsed > 3*time.Second {
+				t.Errorf("%s mode took %s for 10 requests; the limiter appears to be delaying them", mode, elapsed)
+			}
+		})
 	}
 }

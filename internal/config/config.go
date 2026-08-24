@@ -320,6 +320,12 @@ func (e Endpoints) byName() map[string]Mode {
 	}
 }
 
+// ServesNatively reports whether this mode may answer a request from our own
+// implementation rather than relaying Synapse's.
+func (m Mode) ServesNatively() bool {
+	return m.Kind == ModeCanary || m.Kind == ModeNative
+}
+
 // NeedsDatabase reports whether any endpoint is configured to compute its own
 // answer.
 func (c *Config) NeedsDatabase() bool {

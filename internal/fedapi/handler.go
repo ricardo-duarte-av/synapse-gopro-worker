@@ -58,6 +58,15 @@ func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.
 // Limiter exposes the rate limiter for metrics and maintenance.
 func (h *Handler) Limiter() *ratelimit.Limiter { return h.limiter }
 
+// acquire applies the rate limiter when the mode may serve natively, and is a
+// no-op otherwise.
+func (h *Handler) acquire(r *http.Request, mode config.Mode, origin string) (func(), ratelimit.Outcome, error) {
+	if !mode.ServesNatively() {
+		return func() {}, ratelimit.Outcome{}, nil
+	}
+	return h.limiter.Acquire(r.Context(), origin)
+}
+
 // noteLimited records that an origin was rejected and returns how many distinct
 // origins have been. It answers "one noisy server or many?" without needing a
 // per-origin metric label.
@@ -89,13 +98,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := h.modeFor(route.Endpoint)
 	start := time.Now()
 
-	// Rate limit per origin, as Synapse does. The origin here is the one
-	// claimed in the X-Matrix header rather than a verified one: verification
-	// costs a network key fetch, and a limiter that had to do that first could
-	// itself be used to generate load. Synapse limits on the claimed origin for
-	// the same reason.
 	origin := originFromAuth(r.Header.Get("Authorization"))
-	release, outcome, err := h.limiter.Acquire(r.Context(), origin)
+
+	// Rate limiting applies only to requests we answer ourselves.
+	//
+	// While proxying or shadowing, Synapse answers every request and its own
+	// limiter already protects it. Adding ours in front would put every request
+	// through two limiters in series, delaying traffic Synapse would have
+	// served and inflating the very upstream latency we are trying to measure.
+	// The limiter exists to protect us once we are the ones doing the work, so
+	// that is when it is applied.
+	//
+	// The origin is the one claimed in the X-Matrix header rather than a
+	// verified one: verification costs a network key fetch, and a limiter that
+	// had to do that first could itself be used to generate load. Synapse
+	// limits on the claimed origin for the same reason.
+	release, outcome, err := h.acquire(r, mode, origin)
 	if err != nil {
 		if errors.Is(err, ratelimit.ErrLimitExceeded) {
 			metrics.RateLimitedTotal.WithLabelValues(string(route.Endpoint)).Inc()

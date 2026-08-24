@@ -99,10 +99,16 @@ auth:
 
 # Per-origin federation rate limiting.
 #
+# APPLIED ONLY WHEN WE ANSWER. While an endpoint is in proxy or shadow mode,
+# Synapse answers every request and its own limiter already protects it; adding
+# ours in front would put each request through two limiters in series, delaying
+# traffic Synapse would have served. These settings take effect the moment an
+# endpoint moves to canary or native.
+#
 # The syntax mirrors Synapse's rc_federation exactly, so this block can be
-# copied straight from homeserver.yaml. Keep the two in step: if ours is looser
-# than Synapse's we accept load Synapse would shed, and if it is tighter we
-# throttle servers Synapse would answer.
+# copied straight from homeserver.yaml. Copy the ACTIVE settings: if the block
+# is commented out there, Synapse is running its defaults, and copying the
+# commented values would give us limits Synapse has never applied.
 #
 # Omit the block entirely to get Synapse's defaults (window_size 1000,
 # sleep_limit 10, sleep_delay 500, reject_limit 50, concurrent 3). Individual

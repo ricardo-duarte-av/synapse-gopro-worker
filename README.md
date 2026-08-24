@@ -135,11 +135,20 @@ the dangerous direction and must be zero before anything is served natively.
 
 ## Rate limiting
 
+Rate limiting applies **only to requests this worker answers itself** — that is,
+only in `canary` and `native` modes. While an endpoint is proxied or shadowed,
+Synapse answers every request and its own limiter already protects it; applying
+ours as well would put each request through two limiters in series, delaying
+traffic Synapse would have served and inflating the upstream latency the shadow
+comparison exists to measure.
+
 Per-origin rate limiting is ported from Synapse's `FederationRateLimiter`, and
 the configuration block is `rc_federation` with Synapse's own field names, so
 settings can be copied from `homeserver.yaml` without translation. Keep the two
 in step: looser than Synapse and we accept load Synapse would shed; tighter and
-we throttle servers Synapse would answer.
+we throttle servers Synapse would answer. Copy the *active* settings — if
+`rc_federation` is commented out in `homeserver.yaml`, Synapse is running its
+defaults, and copying the commented values would apply limits Synapse never has.
 
 Three stages, in Synapse's order:
 

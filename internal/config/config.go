@@ -11,6 +11,7 @@ import (
 
 	"github.com/daedric/synapse-gopro-worker/internal/cache"
 	"github.com/daedric/synapse-gopro-worker/internal/ratelimit"
+	"github.com/daedric/synapse-gopro-worker/internal/replication"
 )
 
 // Mode selects how a given endpoint is served.
@@ -91,6 +92,11 @@ type Config struct {
 	Shadow    Shadow    `yaml:"shadow"`
 	Auth      Auth      `yaml:"auth"`
 
+	// Replication consumes Synapse's cache-invalidation stream over Redis. It
+	// is what makes the caches safe against events being deleted; without it
+	// they are knowingly stale until the process restarts.
+	Replication replication.Config `yaml:"replication"`
+
 	// RCFederation mirrors Synapse's rc_federation block, so the settings can
 	// be copied across without translation.
 	RCFederation ratelimit.FederationSettings `yaml:"rc_federation"`
@@ -146,6 +152,11 @@ type Database struct {
 	// Cache bounds the in-process caches for immutable data.
 	Cache cache.Settings `yaml:"cache"`
 }
+
+// Replication consumes Synapse's cache-invalidation stream over Redis, which is
+// what makes caching safe against events being deleted. Without it the caches
+// still work, but nothing tells them when a purge has made an entry wrong.
+type Replication = replication.Config
 
 // Enabled reports whether database access is configured.
 func (d Database) Enabled() bool { return d.DSN != "" }
@@ -292,6 +303,20 @@ func (c *Config) validate() error {
 	}
 	if err := c.Database.Cache.Validate(); err != nil {
 		return err
+	}
+	if c.Replication.Enabled {
+		if c.Replication.Address == "" {
+			return fmt.Errorf("replication: address is required when enabled")
+		}
+		// The channel is Synapse's server_name, and one Redis can carry several
+		// homeservers' streams. Subscribing to the wrong one would look healthy
+		// and never invalidate anything, so default it rather than guess later.
+		if c.Replication.Channel == "" {
+			c.Replication.Channel = c.ServerName
+		}
+		if c.Replication.Channel == "" {
+			return fmt.Errorf("replication: channel is required when enabled (it must match Synapse's server_name)")
+		}
 	}
 	if c.Shadow.Concurrency < 0 || c.Shadow.TimeoutSeconds < 0 || c.Shadow.CaptureMB < 0 {
 		return fmt.Errorf("shadow: values must not be negative")

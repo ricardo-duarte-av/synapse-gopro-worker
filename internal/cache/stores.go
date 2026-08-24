@@ -99,3 +99,9 @@ func AuthChainKey(roomID string, eventIDs []string) [32]byte {
 	copy(out[:], h.Sum(nil))
 	return out
 }
+
+// AnyEnabled reports whether any cache is sized above zero.
+func (s Settings) AnyEnabled() bool {
+	return s.StateGroupsMB > 0 || s.EventsMB > 0 ||
+		s.EventStateGroupsMB > 0 || s.AuthChainsMB > 0
+}

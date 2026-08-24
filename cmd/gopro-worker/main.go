@@ -27,6 +27,7 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
 	"github.com/daedric/synapse-gopro-worker/internal/metrics"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
+	"github.com/daedric/synapse-gopro-worker/internal/replication"
 	"github.com/daedric/synapse-gopro-worker/internal/shadow"
 	"github.com/daedric/synapse-gopro-worker/internal/store"
 )
@@ -282,6 +283,8 @@ func openDatabase(ctx context.Context, cfg *config.Config, log zerolog.Logger) (
 		Msg("Caching immutable data in process")
 	metrics.RegisterCaches(db.CacheStats)
 
+	startReplication(ctx, cfg, db, log)
+
 	readOnly, err := db.IsReadOnly(ctx)
 	if err != nil {
 		db.Close()
@@ -334,4 +337,27 @@ func listen(cfg config.Listen) (net.Listener, error) {
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
 	return l, nil
+}
+
+// startReplication consumes Synapse's cache-invalidation stream, which is what
+// makes caching safe against events being deleted.
+//
+// When it is not configured the caches still run, but nothing tells them a
+// purge has happened — so say so loudly rather than let it pass as a default.
+func startReplication(ctx context.Context, cfg *config.Config, db *store.Store, log zerolog.Logger) {
+	if !cfg.Replication.Enabled {
+		if cfg.Database.Cache.WithDefaults().AnyEnabled() {
+			log.Warn().Msg("Caching without replication: nothing will invalidate a cached " +
+				"event that Synapse later deletes, until this process restarts")
+		}
+		return
+	}
+	sub, err := replication.New(cfg.Replication, db, log)
+	if err != nil {
+		// Not fatal, but the caches must not run unsupervised.
+		db.SetCachesArmed(false)
+		log.Error().Err(err).Msg("Replication misconfigured; caches disabled")
+		return
+	}
+	go sub.Run(ctx)
 }

@@ -70,3 +70,51 @@ func (s *Store) CacheStats() []cache.Stats {
 		s.caches.authChains.Stats(),
 	}
 }
+
+// SetCachesArmed turns every cache on or off together.
+//
+// Caching stored events, state groups and auth chains is only safe while we are
+// certain nothing has been deleted underneath us. Synapse's data is immutable
+// in the sense that a state group's contents never change — but rooms get
+// purged and events get deleted, and an entry admitted before we lost the
+// invalidation signal may describe something that no longer exists. Disarming
+// empties every cache, so re-arming always starts from the database.
+func (s *Store) SetCachesArmed(armed bool) {
+	if s == nil || s.caches == nil {
+		return
+	}
+	s.caches.stateGroups.SetArmed(armed)
+	s.caches.events.SetArmed(armed)
+	s.caches.eventStateGroup.SetArmed(armed)
+	s.caches.authChains.SetArmed(armed)
+}
+
+// PurgeCaches empties every cache without disarming it. Used when Synapse tells
+// us it has deleted events, which our caches cannot express selectively: they
+// are keyed by state group, event ID and auth-chain hash, none of which can be
+// mapped back to a room.
+func (s *Store) PurgeCaches() {
+	if s == nil || s.caches == nil {
+		return
+	}
+	s.caches.stateGroups.Purge()
+	s.caches.events.Purge()
+	s.caches.eventStateGroup.Purge()
+	s.caches.authChains.Purge()
+}
+
+// DropEvent removes one event from the caches that key on an event ID. Used for
+// the targeted invalidations Synapse streams per event, so an ordinary
+// invalidation does not cost us the whole cache.
+func (s *Store) DropEvent(eventID string) {
+	if s == nil || s.caches == nil {
+		return
+	}
+	s.caches.events.Remove(eventID)
+	s.caches.eventStateGroup.Remove(eventID)
+}
+
+// CachesArmed reports whether the caches are currently permitted to serve.
+func (s *Store) CachesArmed() bool {
+	return s != nil && s.caches != nil && s.caches.events.Armed()
+}

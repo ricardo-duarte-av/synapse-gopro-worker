@@ -164,3 +164,50 @@ func TestConcurrentUseIsSafe(t *testing.T) {
 		t.Errorf("Bytes = %d, exceeds the bound after concurrent use", s.Bytes)
 	}
 }
+
+func TestDisarmedCacheServesNothing(t *testing.T) {
+	// The invariant the replication subscriber relies on: while disarmed, the
+	// cache must neither serve nor admit, so losing the invalidation stream
+	// degrades to correct-but-slower rather than fast-and-wrong.
+	c := NewLRU[string, string]("t", MB(1), func(v string) int64 { return int64(len(v)) })
+	c.Add("k", "v")
+	if _, ok := c.Get("k"); !ok {
+		t.Fatal("armed cache did not serve")
+	}
+
+	c.SetArmed(false)
+	if c.Enabled() {
+		t.Error("a disarmed cache reports Enabled")
+	}
+	if _, ok := c.Get("k"); ok {
+		t.Error("a disarmed cache served an entry")
+	}
+	c.Add("k2", "v2")
+
+	// Re-arming must not resurrect anything: entries admitted before the
+	// signal was lost cannot be trusted.
+	c.SetArmed(true)
+	if _, ok := c.Get("k"); ok {
+		t.Error("disarming did not empty the cache")
+	}
+	if _, ok := c.Get("k2"); ok {
+		t.Error("a disarmed cache admitted an entry")
+	}
+}
+
+func TestRemoveDropsOneEntry(t *testing.T) {
+	c := NewLRU[string, string]("t", MB(1), func(v string) int64 { return int64(len(v)) })
+	c.Add("a", "1")
+	c.Add("b", "2")
+	c.Remove("a")
+	c.Remove("missing") // must not panic
+	if _, ok := c.Get("a"); ok {
+		t.Error("Remove left the entry in place")
+	}
+	if _, ok := c.Get("b"); !ok {
+		t.Error("Remove dropped the wrong entry")
+	}
+	if got := c.Stats().Bytes; got != 1 {
+		t.Errorf("Bytes = %d after removing one of two 1-byte entries, want 1", got)
+	}
+}

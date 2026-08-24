@@ -93,6 +93,33 @@ endpoints:
 # only compared against Synapse's, never acted on. Watch
 # gopro_auth_verdicts_total: "we_accept_synapse_rejects" is the dangerous
 # direction and must be zero before any endpoint is served natively.
+# Synapse's cache-invalidation stream, over Redis.
+#
+# This is what makes caching safe. Synapse's data is immutable in the sense that
+# a state group's contents never change -- but rooms get purged and events get
+# deleted, and a cached entry then describes something that is gone. Without
+# this the worker will eventually answer from a cache Synapse has moved past.
+#
+# It is read-only (SUBSCRIBE only) and needs no credentials beyond reaching
+# Redis. Note this is the *stream* replication that every Synapse worker
+# consumes -- not the HTTP `replication` listener and instance_map entry, which
+# only writer workers need.
+#
+# The caches are armed only while this subscription is healthy: every connect,
+# reconnect, unparseable row and disconnect empties them. Losing Redis therefore
+# costs latency, never correctness. Watch gopro_replication_connected.
+replication:
+  enabled: true
+  # Unix socket path, or host:port.
+  address: /var/sockets/keydb
+  # MUST equal Synapse's server_name: the channel is named after it, and one
+  # Redis can carry several homeservers' streams. Subscribing to the wrong
+  # channel looks perfectly healthy and never invalidates anything.
+  # Defaults to server_name above if omitted.
+  channel: example.com
+  # password: ""
+  # db: 0
+
 auth:
   # Minimum delay before re-querying a server whose key fetch failed, so an
   # unreachable server cannot become a stream of outbound requests.

@@ -15,6 +15,7 @@ package cache
 import (
 	"container/list"
 	"sync"
+	"sync/atomic"
 )
 
 // Sizer reports the approximate memory footprint of a cached value.
@@ -25,6 +26,11 @@ type LRU[K comparable, V any] struct {
 	name     string
 	maxBytes int64
 	sizeOf   Sizer[V]
+
+	// armed gates the whole cache at runtime. It exists so caching can be
+	// suspended the moment we lose the invalidation signal that makes it safe,
+	// without tearing down the cache or touching any call site.
+	armed atomic.Bool
 
 	mu      sync.Mutex
 	entries map[K]*list.Element
@@ -44,17 +50,41 @@ type entry[K comparable, V any] struct {
 // cache entirely: Get always misses and Add does nothing, so a cache can be
 // turned off in configuration without changing any call site.
 func NewLRU[K comparable, V any](name string, maxBytes int64, sizeOf Sizer[V]) *LRU[K, V] {
-	return &LRU[K, V]{
+	c := &LRU[K, V]{
 		name:     name,
 		maxBytes: maxBytes,
 		sizeOf:   sizeOf,
 		entries:  make(map[K]*list.Element),
 		order:    list.New(),
 	}
+	// Armed by default, so a deployment without an invalidation source behaves
+	// exactly as before. Anything that can lose that signal must disarm.
+	c.armed.Store(true)
+	return c
 }
 
-// Enabled reports whether the cache stores anything.
-func (c *LRU[K, V]) Enabled() bool { return c != nil && c.maxBytes > 0 }
+// SetArmed turns the cache on or off at runtime. Disarming also empties it:
+// entries admitted before the invalidation signal was lost cannot be trusted,
+// and keeping them would only make re-arming dangerous.
+func (c *LRU[K, V]) SetArmed(armed bool) {
+	if c == nil {
+		return
+	}
+	c.armed.Store(armed)
+	if !armed {
+		c.Purge()
+	}
+}
+
+// Armed reports whether the cache is currently permitted to serve.
+func (c *LRU[K, V]) Armed() bool { return c != nil && c.armed.Load() }
+
+// Enabled reports whether the cache stores anything right now. Both conditions
+// matter: a cache sized to zero is off permanently, and a disarmed cache is off
+// until its invalidation source comes back.
+func (c *LRU[K, V]) Enabled() bool {
+	return c != nil && c.maxBytes > 0 && c.armed.Load()
+}
 
 // Get returns a cached value.
 func (c *LRU[K, V]) Get(key K) (V, bool) {
@@ -166,4 +196,21 @@ func (c *LRU[K, V]) Purge() {
 	c.entries = make(map[K]*list.Element)
 	c.order.Init()
 	c.bytes = 0
+}
+
+// Remove drops a single entry. Removing something absent is not an error: an
+// invalidation for a key we never cached is the common case.
+func (c *LRU[K, V]) Remove(key K) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, ok := c.entries[key]
+	if !ok {
+		return
+	}
+	c.bytes -= el.Value.(*entry[K, V]).size
+	c.order.Remove(el)
+	delete(c.entries, key)
 }

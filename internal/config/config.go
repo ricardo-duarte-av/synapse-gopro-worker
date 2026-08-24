@@ -297,7 +297,7 @@ func (c *Config) validate() error {
 		return err
 	}
 
-	for name, m := range c.Endpoints.byName() {
+	for name, m := range c.Endpoints.ByName() {
 		// Shadow and canary compare against Synapse, and a comparison whose
 		// disagreements are not recorded is not worth running.
 		if (m.Kind == ModeShadow || m.Kind == ModeCanary) && !c.DiffLog.Enabled() {
@@ -311,8 +311,8 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// byName maps each endpoint to its configured mode.
-func (e Endpoints) byName() map[string]Mode {
+// ByName maps each endpoint to its configured mode.
+func (e Endpoints) ByName() map[string]Mode {
 	return map[string]Mode{
 		"event":     e.Event,
 		"state":     e.State,
@@ -329,7 +329,7 @@ func (m Mode) ServesNatively() bool {
 // NeedsDatabase reports whether any endpoint is configured to compute its own
 // answer.
 func (c *Config) NeedsDatabase() bool {
-	for _, m := range c.Endpoints.byName() {
+	for _, m := range c.Endpoints.ByName() {
 		if m.Kind != ModeProxy {
 			return true
 		}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sort"
 	"syscall"
 	"time"
 
@@ -160,14 +161,29 @@ func run() error {
 
 	handler := fedapi.New(cfg, p, runner, log)
 
+	// Report which endpoints the limiter actually governs. It applies only
+	// where we answer, so saying "active" while everything is proxied or
+	// shadowed would describe behaviour that is not happening.
 	rc := handler.Limiter().Settings()
-	log.Info().
+	var limited []string
+	for name, m := range cfg.Endpoints.ByName() {
+		if m.ServesNatively() {
+			limited = append(limited, name)
+		}
+	}
+	sort.Strings(limited)
+
+	ev := log.Info().
 		Int("window_size", rc.WindowSize).
 		Int("sleep_limit", rc.SleepLimit).
 		Int("sleep_delay", rc.SleepDelay).
 		Int("reject_limit", rc.RejectLimit).
-		Int("concurrent", rc.Concurrent).
-		Msg("Federation rate limiting active")
+		Int("concurrent", rc.Concurrent)
+	if len(limited) == 0 {
+		ev.Msg("Federation rate limiting configured but inactive: no endpoint serves natively yet, so Synapse's own limiter governs every request")
+	} else {
+		ev.Strs("endpoints", limited).Msg("Federation rate limiting active")
+	}
 
 	metrics.RegisterRateLimitHosts(handler.Limiter().Hosts)
 

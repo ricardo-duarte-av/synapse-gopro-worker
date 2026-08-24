@@ -13,6 +13,20 @@ var latencyBuckets = []float64{
 	.001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30,
 }
 
+// RegisterRateLimitHosts exports how many origin servers currently have rate
+// limit state.
+//
+// Sampled on scrape rather than pushed from a ticker: a pushed gauge reads zero
+// until the first tick fires, which for a ten-minute cleanup loop means it is
+// wrong for ten minutes after every restart.
+func RegisterRateLimitHosts(hosts func() int) {
+	promauto.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace: "gopro",
+		Name:      "rate_limit_hosts",
+		Help:      "Origin servers with live rate limit state.",
+	}, func() float64 { return float64(hosts()) })
+}
+
 var (
 	// RequestsTotal counts requests by endpoint, serving mode and status.
 	RequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -75,14 +89,6 @@ var (
 		Namespace: "gopro",
 		Name:      "rate_limited_origins",
 		Help:      "Distinct origin servers rejected by the rate limit since startup.",
-	})
-
-	// RateLimitHosts reports how many origin servers currently have rate limit
-	// state, which is also a rough measure of how many servers are talking to us.
-	RateLimitHosts = promauto.NewGauge(prometheus.GaugeOpts{
-		Namespace: "gopro",
-		Name:      "rate_limit_hosts",
-		Help:      "Origin servers with live rate limit state.",
 	})
 
 	// ResponseBytes observes response sizes, which drive the cost of /state.

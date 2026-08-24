@@ -169,6 +169,8 @@ func run() error {
 		Int("concurrent", rc.Concurrent).
 		Msg("Federation rate limiting active")
 
+	metrics.RegisterRateLimitHosts(handler.Limiter().Hosts)
+
 	// Discard state for servers we have not heard from, so a one-off contact
 	// does not occupy memory indefinitely.
 	go func() {
@@ -179,8 +181,9 @@ func run() error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				handler.Limiter().Cleanup(time.Hour)
-				metrics.RateLimitHosts.Set(float64(handler.Limiter().Hosts()))
+				if n := handler.Limiter().Cleanup(time.Hour); n > 0 {
+					log.Debug().Int("removed", n).Msg("Cleaned up idle rate limit state")
+				}
 			}
 		}
 	}()

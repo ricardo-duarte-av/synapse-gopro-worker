@@ -4,8 +4,27 @@
 provision it (below). It picks up any Prometheus data source through a
 `datasource` template variable, so no UID editing is needed.
 
-Template variables: **Data source**, **Job** and **Endpoint** (both multi-select,
-default All).
+Template variables: **Bucket**, **Data source**, **Job** and **Endpoint** (the
+last two multi-select, default All).
+
+### Bucket
+
+Selects the range window used by every `rate()` and `histogram_quantile()` on
+the dashboard, from 5s to 1h.
+
+Two things constrain the useful range, both measured against this deployment
+rather than assumed:
+
+- Prometheus scrapes the worker every **15s**, and `rate()` needs at least two
+  samples inside the window. **5s, 10s and 15s return no data at all**; 30s is
+  the practical floor.
+- Federation volume here is low enough that even a 1m window frequently reads
+  as zero between requests. The default is therefore **5m**, which was the
+  narrowest window returning a meaningful rate during a period with traffic.
+
+Narrow the bucket to inspect a burst — a load test, or a single server going
+haywire. Widen it to see a trend without the sawtooth that sparse traffic
+produces.
 
 ## Rows
 

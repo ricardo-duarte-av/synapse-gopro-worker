@@ -20,6 +20,81 @@
   "templating": {
     "list": [
       {
+        "name": "bucket",
+        "label": "Bucket",
+        "description": "Range window for rate() and histogram_quantile(). Prometheus scrapes this worker every 15s and rate() needs at least two samples in the window, so 5s/10s/15s return nothing at all and 30s is the practical floor. At this server's federation volume even 1m often reads as zero between requests, which is why the default is 5m. Narrow it to inspect a burst; widen it to see a trend.",
+        "type": "interval",
+        "query": "5s,10s,15s,30s,1m,2m,5m,10m,15m,30m,1h",
+        "options": [
+          {
+            "text": "5s",
+            "value": "5s",
+            "selected": false
+          },
+          {
+            "text": "10s",
+            "value": "10s",
+            "selected": false
+          },
+          {
+            "text": "15s",
+            "value": "15s",
+            "selected": false
+          },
+          {
+            "text": "30s",
+            "value": "30s",
+            "selected": false
+          },
+          {
+            "text": "1m",
+            "value": "1m",
+            "selected": false
+          },
+          {
+            "text": "2m",
+            "value": "2m",
+            "selected": false
+          },
+          {
+            "text": "5m",
+            "value": "5m",
+            "selected": true
+          },
+          {
+            "text": "10m",
+            "value": "10m",
+            "selected": false
+          },
+          {
+            "text": "15m",
+            "value": "15m",
+            "selected": false
+          },
+          {
+            "text": "30m",
+            "value": "30m",
+            "selected": false
+          },
+          {
+            "text": "1h",
+            "value": "1h",
+            "selected": false
+          }
+        ],
+        "current": {
+          "text": "5m",
+          "value": "5m",
+          "selected": true
+        },
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "30s",
+        "refresh": 2,
+        "hide": 0,
+        "skipUrlSync": false
+      },
+      {
         "name": "datasource",
         "label": "Data source",
         "type": "datasource",
@@ -78,7 +153,7 @@
         },
         "enable": true,
         "iconColor": "blue",
-        "expr": "changes(gopro_shadow_restarts_total{job=~\"$job\"}[$__rate_interval]) > 0",
+        "expr": "changes(gopro_shadow_restarts_total{job=~\"$job\"}[$bucket]) > 0",
         "titleFormat": "Worker restarted"
       }
     ]
@@ -151,7 +226,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum(rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "req/s",
           "range": true,
           "refId": "A"
@@ -221,7 +296,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\", status=~\"5..\"}[$__rate_interval])) / clamp_min(sum(rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])), 1e-9)",
+          "expr": "sum(rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\", status=~\"5..\"}[$bucket])) / clamp_min(sum(rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])), 1e-9)",
           "legendFormat": "5xx",
           "range": true,
           "refId": "A"
@@ -291,7 +366,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "p99",
           "range": true,
           "refId": "A"
@@ -357,7 +432,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(gopro_upstream_errors_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum(rate(gopro_upstream_errors_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "errors/s",
           "range": true,
           "refId": "A"
@@ -419,7 +494,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\", status=\"canceled\"}[$__rate_interval]))",
+          "expr": "sum(rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\", status=\"canceled\"}[$bucket]))",
           "legendFormat": "canceled/s",
           "range": true,
           "refId": "A"
@@ -543,7 +618,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (endpoint) (rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (endpoint) (rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "{{endpoint}}",
           "range": true,
           "refId": "A"
@@ -606,7 +681,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "p50 {{endpoint}}",
           "range": true,
           "refId": "A"
@@ -617,7 +692,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(gopro_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(gopro_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "p95 {{endpoint}}",
           "range": true,
           "refId": "B"
@@ -628,7 +703,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "p99 {{endpoint}}",
           "range": true,
           "refId": "C"
@@ -703,7 +778,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (status) (rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "{{status}}",
           "range": true,
           "refId": "A"
@@ -766,7 +841,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (mode, endpoint) (rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (mode, endpoint) (rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "{{endpoint}} {{mode}}",
           "range": true,
           "refId": "A"
@@ -816,7 +891,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (le) (rate(gopro_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (le) (rate(gopro_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "{{le}}",
           "range": true,
           "refId": "A",
@@ -880,7 +955,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_response_bytes_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_response_bytes_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "p50 {{endpoint}}",
           "range": true,
           "refId": "A"
@@ -891,7 +966,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_response_bytes_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_response_bytes_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "p99 {{endpoint}}",
           "range": true,
           "refId": "B"
@@ -1426,7 +1501,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (endpoint) (rate(gopro_shadow_mismatched_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (endpoint) (rate(gopro_shadow_mismatched_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "{{endpoint}}",
           "range": true,
           "refId": "A"
@@ -1490,7 +1565,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_shadow_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_shadow_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "native p50 {{endpoint}}",
           "range": true,
           "refId": "A"
@@ -1501,7 +1576,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_shadow_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_shadow_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "native p99 {{endpoint}}",
           "range": true,
           "refId": "B"
@@ -1512,7 +1587,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_shadow_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_shadow_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "synapse p50 {{endpoint}}",
           "range": true,
           "refId": "C"
@@ -1523,7 +1598,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_shadow_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_shadow_upstream_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "synapse p99 {{endpoint}}",
           "range": true,
           "refId": "D"
@@ -1605,7 +1680,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(gopro_rate_limited_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum(rate(gopro_rate_limited_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "rejected/s",
           "range": true,
           "refId": "A"
@@ -1667,7 +1742,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(gopro_rate_limit_slept_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum(rate(gopro_rate_limit_slept_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "delayed/s",
           "range": true,
           "refId": "A"
@@ -1851,7 +1926,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_rate_limit_queue_wait_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_rate_limit_queue_wait_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "p99",
           "range": true,
           "refId": "A"
@@ -1921,7 +1996,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(gopro_rate_limited_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])) / clamp_min(sum(rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])), 1e-9)",
+          "expr": "sum(rate(gopro_rate_limited_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])) / clamp_min(sum(rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])), 1e-9)",
           "legendFormat": "share",
           "range": true,
           "refId": "A"
@@ -1984,7 +2059,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (endpoint) (rate(gopro_rate_limited_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (endpoint) (rate(gopro_rate_limited_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "rejected {{endpoint}}",
           "range": true,
           "refId": "A"
@@ -1995,7 +2070,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (endpoint) (rate(gopro_rate_limit_slept_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (endpoint) (rate(gopro_rate_limit_slept_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
           "legendFormat": "delayed {{endpoint}}",
           "range": true,
           "refId": "B"
@@ -2058,7 +2133,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_rate_limit_queue_wait_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(gopro_rate_limit_queue_wait_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "p50 {{endpoint}}",
           "range": true,
           "refId": "A"
@@ -2069,7 +2144,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_rate_limit_queue_wait_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_rate_limit_queue_wait_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
           "legendFormat": "p99 {{endpoint}}",
           "range": true,
           "refId": "B"

@@ -31,7 +31,14 @@ type Event struct {
 	// RejectedReason is non-empty for events that failed auth. They are still
 	// stored, and /event may return them, but they are not part of room state.
 	RejectedReason string
+	// RedactedBy is the redaction event that redacted this one, or empty. When
+	// set, the event must be served in redacted form: redaction is how a user
+	// deletes a message.
+	RedactedBy string
 }
+
+// IsRedacted reports whether the event has been redacted.
+func (e *Event) IsRedacted() bool { return e.RedactedBy != "" }
 
 // IsStateEvent reports whether the event carries a state key.
 func (e *Event) IsStateEvent() bool { return e.StateKey != nil }
@@ -61,9 +68,23 @@ func (s *Store) GetEvent(ctx context.Context, eventID string) (*Event, error) {
 	return ev, nil
 }
 
-// GetEvents loads events by ID. Events we do not have are simply absent from
-// the result, matching Synapse's behaviour.
+// GetEvents loads events by ID, marking any that have been redacted. Events we
+// do not have are simply absent from the result, matching Synapse's behaviour.
 func (s *Store) GetEvents(ctx context.Context, eventIDs []string) (map[string]*Event, error) {
+	events, err := s.getEventsRaw(ctx, eventIDs)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.applyRedactions(ctx, events); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+// getEventsRaw loads events without resolving redactions. Callers outside this
+// package must use GetEvents, so that a redacted event can never be returned
+// looking un-redacted.
+func (s *Store) getEventsRaw(ctx context.Context, eventIDs []string) (map[string]*Event, error) {
 	out := make(map[string]*Event, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return out, nil

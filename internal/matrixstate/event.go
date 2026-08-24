@@ -66,9 +66,12 @@ func (r *Resolver) Event(ctx context.Context, origin, serverName, eventID string
 		return nil, err
 	}
 
+	// An event that has been redacted is served in redacted form regardless of
+	// visibility: redaction is how a user deletes a message. Synapse applies
+	// this when loading the event, before any visibility filtering, so a
+	// redacted event is already pruned by the time visibility is considered.
 	body := ev.JSON
-	if !visible {
-		// Filtered events are redacted, not omitted.
+	if ev.IsRedacted() || !visible {
 		body, err = redactEvent(ev)
 		if err != nil {
 			return nil, fmt.Errorf("redact event: %w", err)

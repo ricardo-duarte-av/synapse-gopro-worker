@@ -127,6 +127,16 @@ func (r *Resolver) stateIDsForEvent(ctx context.Context, roomID, eventID string)
 	if ev.RoomID != roomID {
 		return nil, errEventNotInRoom(eventID, roomID)
 	}
+	// A rejected event failed auth, so it is not part of the room's state and
+	// Synapse refuses to answer for it: get_state_ids_for_pdu loads the event
+	// with allow_rejected left at its default of false, which raises a plain
+	// "could not find event".
+	//
+	// Note /event does the opposite and serves rejected events deliberately,
+	// so this check belongs here rather than in the shared event load.
+	if ev.RejectedReason != "" {
+		return nil, errEventNotFound(eventID)
+	}
 	if ev.Outlier {
 		// We hold the event but not the state around it.
 		return nil, errStateNotKnown(eventID)

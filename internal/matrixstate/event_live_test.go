@@ -148,3 +148,123 @@ func truncate(s string) string {
 	}
 	return s
 }
+
+// TestLiveStateIDsRejectsRejectedEvents covers a divergence found in
+// production: a rejected event is not part of room state, and Synapse answers
+// for it with a plain "could not find event". Serving its state instead would
+// hand remote servers a state map Synapse refuses to youch for.
+//
+// /event deliberately does the opposite and serves rejected events, so both
+// behaviours are asserted together to keep them from drifting into each other.
+func TestLiveStateIDsRejectsRejectedEvents(t *testing.T) {
+	r, s := liveResolver(t)
+	ctx := context.Background()
+
+	var roomID, eventID string
+	err := s.Pool().QueryRow(ctx, `
+		SELECT e.room_id, e.event_id FROM events e
+		JOIN rooms USING (room_id)
+		WHERE e.rejection_reason IS NOT NULL AND e.outlier = false
+		LIMIT 1`).Scan(&roomID, &eventID)
+	if err != nil {
+		t.Skipf("no rejected event available: %v", err)
+	}
+
+	_, err = r.StateIDs(ctx, ourServer, roomID, eventID)
+	me, ok := err.(*MatrixError)
+	if !ok {
+		t.Fatalf("state_ids for rejected event %s: err = %v, want a MatrixError", eventID, err)
+	}
+	if me.Status != 404 {
+		t.Errorf("status = %d, want 404", me.Status)
+	}
+	if me.Message != "Could not find event "+eventID {
+		t.Errorf("message = %q, want Synapse's exact wording", me.Message)
+	}
+
+	// The same event must still be served by /event.
+	resp, err := r.Event(ctx, ourServer, ourServer, eventID)
+	if err != nil {
+		if _, isMatrix := err.(*MatrixError); isMatrix {
+			t.Skipf("cannot check /event for %s: %v", roomID, err)
+		}
+		t.Fatalf("/event refused a rejected event: %v", err)
+	}
+	if len(resp.PDUs) != 1 {
+		t.Errorf("/event returned %d pdus for a rejected event, want 1", len(resp.PDUs))
+	}
+}
+
+// TestLiveRedactedEventIsServedRedacted covers the most serious divergence
+// found in production: an event that a user has redacted was being served with
+// its original content.
+//
+// Redaction is how a user deletes a message. Serving the original content over
+// federation would undo that, so this is checked against real redacted events
+// rather than a synthetic one.
+func TestLiveRedactedEventIsServedRedacted(t *testing.T) {
+	r, s := liveResolver(t)
+	ctx := context.Background()
+
+	rows, err := s.Pool().Query(ctx, `
+		SELECT e.event_id FROM redactions rd
+		JOIN events e ON e.event_id = rd.redacts
+		JOIN rooms USING (room_id)
+		WHERE rd.recheck = false AND e.outlier = false
+		  AND e.type = 'm.room.message' AND e.rejection_reason IS NULL
+		LIMIT 20`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		t.Skip("no redacted messages available")
+	}
+
+	var checked int
+	for _, id := range ids {
+		ev, err := s.GetEvent(ctx, id)
+		if err != nil {
+			continue
+		}
+		if !ev.IsRedacted() {
+			t.Errorf("%s has a confirmed redaction but was not marked redacted", id)
+			continue
+		}
+
+		resp, err := r.Event(ctx, ourServer, ourServer, id)
+		if err != nil {
+			if _, ok := err.(*MatrixError); ok {
+				continue
+			}
+			t.Fatalf("%s: %v", id, err)
+		}
+		if len(resp.PDUs) != 1 {
+			t.Fatalf("%s: %d pdus", id, len(resp.PDUs))
+		}
+
+		var out struct {
+			Content map[string]any `json:"content"`
+		}
+		if err := json.Unmarshal(resp.PDUs[0], &out); err != nil {
+			t.Fatal(err)
+		}
+		// A redacted m.room.message keeps no content at all.
+		if _, leaked := out.Content["body"]; leaked {
+			t.Errorf("%s: redacted message was served with its body intact", id)
+		}
+		checked++
+	}
+	t.Logf("verified %d redacted events are served redacted", checked)
+	if checked == 0 {
+		t.Skip("no redacted events were servable")
+	}
+}

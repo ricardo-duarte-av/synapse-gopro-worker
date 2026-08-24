@@ -124,6 +124,17 @@ While an endpoint is in shadow mode, verification runs off the request path
 Synapse's. `gopro_auth_verdicts_total{result="we_accept_synapse_rejects"}` is
 the dangerous direction and must be zero before anything is served natively.
 
+## Known gaps before native serving
+
+- **No federation rate limiting.** Synapse applies `rc_federation` per origin
+  and answers 429 when a server exceeds it; this worker does not, and would
+  serve requests Synapse would have throttled. Observed live during a load
+  test. This is an availability concern rather than a correctness or
+  disclosure one, and it must be closed before any endpoint is served
+  natively.
+- **`/state` has no native implementation.** It receives no traffic on the
+  deployment this was built against.
+
 ## Layout
 
 ```

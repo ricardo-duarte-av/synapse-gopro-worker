@@ -225,12 +225,32 @@ func usesV1EventFormat(roomVersion id.RoomVersion) bool {
 	}
 }
 
-// applyPDUJSONRules performs the two transformations Synapse applies when
-// putting an event on the wire, from EventBase.get_pdu_json.
+// persistedUnsignedFields are the only keys Synapse emits inside unsigned.
 //
-// unsigned.age_ts becomes unsigned.age relative to now, and
-// unsigned.redacted_because is dropped. The age field is therefore
-// wall-clock-dependent and cannot be compared between implementations by value.
+// Synapse models unsigned as a typed struct, so serialising an event keeps
+// exactly these fields and silently drops everything else -- including "age",
+// which remote servers send and Synapse stores but never echoes back. Passing
+// the stored unsigned through verbatim differs from Synapse on any event that
+// arrived with extra keys, which in practice is most of them.
+var persistedUnsignedFields = []string{
+	"age_ts",
+	"replaces_state",
+	"invite_room_state",
+	"knock_room_state",
+	"prev_content",
+	"prev_sender",
+}
+
+// applyPDUJSONRules reshapes a stored event into what Synapse puts on the wire.
+//
+// unsigned is rebuilt from the allowlist above, then age_ts is converted into
+// an age relative to now, mirroring Synapse's get_pdu_json. Because age is
+// derived here rather than copied, it is wall-clock dependent and cannot be
+// compared between implementations by value.
+//
+// unsigned is always emitted, even when empty: Synapse serialises its typed
+// struct unconditionally, so an event with nothing to report still carries
+// "unsigned": {}.
 func applyPDUJSONRules(body []byte, nowMS int64) ([]byte, error) {
 	var ev struct {
 		Unsigned map[string]json.RawMessage `json:"unsigned"`
@@ -238,33 +258,31 @@ func applyPDUJSONRules(body []byte, nowMS int64) ([]byte, error) {
 	if err := json.Unmarshal(body, &ev); err != nil {
 		return nil, err
 	}
-	if ev.Unsigned == nil {
-		return body, nil
+
+	unsigned := map[string]json.RawMessage{}
+	for _, field := range persistedUnsignedFields {
+		if v, ok := ev.Unsigned[field]; ok {
+			unsigned[field] = v
+		}
 	}
 
-	out := body
-	if raw, ok := ev.Unsigned["age_ts"]; ok {
+	if raw, ok := unsigned["age_ts"]; ok {
 		var ageTS int64
 		if err := json.Unmarshal(raw, &ageTS); err == nil {
-			var err error
-			out, err = sjson.SetBytes(out, "unsigned.age", nowMS-ageTS)
+			age, err := json.Marshal(nowMS - ageTS)
 			if err != nil {
 				return nil, err
 			}
-			out, err = sjson.DeleteBytes(out, "unsigned.age_ts")
-			if err != nil {
-				return nil, err
-			}
+			unsigned["age"] = age
+			delete(unsigned, "age_ts")
 		}
 	}
-	if _, ok := ev.Unsigned["redacted_because"]; ok {
-		var err error
-		out, err = sjson.DeleteBytes(out, "unsigned.redacted_because")
-		if err != nil {
-			return nil, err
-		}
+
+	encoded, err := json.Marshal(unsigned)
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	return sjson.SetRawBytes(body, "unsigned", encoded)
 }
 
 func senderOf(body []byte) (string, error) {

@@ -268,3 +268,67 @@ func TestLiveRedactedEventIsServedRedacted(t *testing.T) {
 		t.Skip("no redacted events were servable")
 	}
 }
+
+// TestLiveEventPreservesNullEscapes checks events containing \u0000 escapes.
+//
+// Roughly fifteen thousand stored events here contain one; PostgreSQL's jsonb
+// type cannot even represent them. Since the response body is produced by
+// splicing into the stored JSON, a re-encoding that changed how the escape is
+// written would differ from Synapse on every one of those events.
+func TestLiveEventPreservesNullEscapes(t *testing.T) {
+	r, s := liveResolver(t)
+	ctx := context.Background()
+
+	rows, err := s.Pool().Query(ctx, `
+		SELECT e.event_id FROM event_json ej
+		JOIN events e ON e.event_id = ej.event_id
+		JOIN rooms r ON r.room_id = e.room_id
+		WHERE ej.json LIKE '%\\u0000%' AND e.outlier = false
+		LIMIT 10`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		t.Skip("no events with null escapes")
+	}
+
+	var checked int
+	for _, id := range ids {
+		resp, err := r.Event(ctx, ourServer, ourServer, id)
+		if err != nil {
+			if _, ok := err.(*MatrixError); ok {
+				continue
+			}
+			t.Errorf("%s: %v", id, err)
+			continue
+		}
+		if len(resp.PDUs) != 1 {
+			t.Errorf("%s: %d pdus", id, len(resp.PDUs))
+			continue
+		}
+		// The response must stay parseable, and the escape must survive as an
+		// escape rather than becoming a raw NUL byte.
+		var out map[string]any
+		if err := json.Unmarshal(resp.PDUs[0], &out); err != nil {
+			t.Errorf("%s: response is not valid JSON: %v", id, err)
+			continue
+		}
+		if strings.ContainsRune(string(resp.PDUs[0]), 0) {
+			t.Errorf("%s: a null escape became a raw NUL byte", id)
+		}
+		checked++
+	}
+	t.Logf("served %d events containing null escapes without corruption", checked)
+	if checked == 0 {
+		t.Skip("none were servable")
+	}
+}

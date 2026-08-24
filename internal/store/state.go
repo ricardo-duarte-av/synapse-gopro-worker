@@ -63,6 +63,10 @@ const stateGroupQuery = `
 
 // GetStateForGroup resolves the full state map at a state group.
 //
+// The returned map is shared and cached: callers MUST NOT modify it. Mutating
+// it corrupts the cache for every later request and races with concurrent
+// readers. Apply any per-request adjustment while reading, or copy first.
+//
 // state_groups_state is the largest table in a Synapse database by a wide
 // margin, and the planner will choose a sequential scan over it without help.
 // Synapse disables seqscan for this transaction and so must we: the query is

@@ -156,20 +156,29 @@ func (r *Resolver) stateIDsForEvent(ctx context.Context, roomID, eventID string)
 	}
 
 	// A state group includes the event itself when the event is a state event,
-	// but /state_ids must return the state *before* it. Replace the event's own
-	// entry with what it superseded, or drop the entry if it introduced that
-	// key.
+	// but /state_ids must return the state *before* it: the entry is replaced
+	// by what it superseded, or dropped if it introduced that key.
+	//
+	// The adjustment is applied while building the result rather than by
+	// editing the map. GetStateForGroup returns a cached, shared map, so
+	// mutating it would corrupt the cache for every later request — and race
+	// with concurrent readers besides.
+	var skip *store.StateKey
+	var replacement string
 	if ev.IsStateEvent() {
 		key := store.StateKey{Type: ev.Type, StateKey: *ev.StateKey}
-		if prev := replacesState(ev.JSON); prev != "" {
-			state[key] = prev
-		} else {
-			delete(state, key)
-		}
+		skip = &key
+		replacement = replacesState(ev.JSON)
 	}
 
 	ids := make([]string, 0, len(state))
-	for _, id := range state {
+	for key, id := range state {
+		if skip != nil && key == *skip {
+			if replacement != "" {
+				ids = append(ids, replacement)
+			}
+			continue
+		}
 		ids = append(ids, id)
 	}
 	return ids, nil

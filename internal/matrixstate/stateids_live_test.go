@@ -231,3 +231,80 @@ func TestLiveStateIDsOutlier(t *testing.T) {
 	}
 	t.Logf("outlier handled in %s: %d %s", time.Since(start), me.Status, me.Message)
 }
+
+// TestLiveStateIDsDoesNotCorruptCache reproduces a bug that served wrong state
+// to remote servers for over half an hour.
+//
+// /state_ids returns the state *before* an event, which for a state event means
+// removing that event's own entry. That adjustment was applied by editing the
+// map returned by the store — which is cached and shared, so the entry vanished
+// from the cache permanently and every later request for the same state group
+// came back one event short.
+//
+// The check is to ask for state at a state event, then ask for state at a
+// non-state event in the same group, and confirm the second answer is still
+// complete.
+func TestLiveStateIDsDoesNotCorruptCache(t *testing.T) {
+	r, s := liveResolver(t)
+	ctx := context.Background()
+
+	// A state event and a non-state event sharing one state group, in a room we
+	// can actually serve — otherwise the request is refused and the test would
+	// pass without exercising anything.
+	var stateEventID, plainEventID, roomID string
+	var group int64
+	err := s.Pool().QueryRow(ctx, `
+		SELECT se.room_id, se.event_id, pe.event_id, g.state_group
+		FROM events se
+		JOIN event_to_state_groups g ON g.event_id = se.event_id
+		JOIN event_to_state_groups pg ON pg.state_group = g.state_group
+		JOIN events pe ON pe.event_id = pg.event_id
+		JOIN rooms ON rooms.room_id = se.room_id
+		WHERE se.state_key IS NOT NULL AND se.outlier = false AND se.rejection_reason IS NULL
+		  AND pe.state_key IS NULL AND pe.outlier = false AND pe.rejection_reason IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM partial_state_rooms p WHERE p.room_id = se.room_id)
+		  AND NOT EXISTS (
+		        SELECT 1 FROM current_state_events c
+		        WHERE c.room_id = se.room_id AND c.type = 'm.room.server_acl')
+		LIMIT 1`).Scan(&roomID, &stateEventID, &plainEventID, &group)
+	if err != nil {
+		t.Skipf("no suitable state/non-state pair sharing a group: %v", err)
+	}
+
+	// Baseline: full state at the group, straight from the store.
+	full, err := s.GetStateForGroup(ctx, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := len(full)
+	if want == 0 {
+		t.Skip("state group resolved to nothing")
+	}
+
+	// Asking for state at the state event must not disturb the cached map.
+	// This must succeed: a refused request would leave the mutation path
+	// unexercised and the test would pass for the wrong reason.
+	if _, err := r.StateIDs(ctx, ourServer, roomID, stateEventID); err != nil {
+		t.Fatalf("state_ids at the state event failed, so the test proves nothing: %v", err)
+	}
+
+	after, err := s.GetStateForGroup(ctx, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != want {
+		t.Errorf("cached state map changed from %d to %d entries after a /state_ids request",
+			want, len(after))
+	}
+
+	// And the non-state event must still get the complete state.
+	resp, err := r.StateIDs(ctx, ourServer, roomID, plainEventID)
+	if err != nil {
+		t.Fatalf("state_ids at the non-state event failed: %v", err)
+	}
+	if len(resp.PDUIDs) != want {
+		t.Errorf("state at a non-state event returned %d ids, want %d; the cache was corrupted",
+			len(resp.PDUIDs), want)
+	}
+	t.Logf("room %s group %d: %d state ids, cache intact", roomID, group, want)
+}

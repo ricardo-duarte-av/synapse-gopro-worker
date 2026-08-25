@@ -165,9 +165,15 @@ func (v *Verifier) requireCurrentlyValidKey(authHeader string) *mautrix.RespErro
 		return nil
 	}
 
+	// The question is only whether the origin has a key response that is still
+	// valid. Which key signed the request, and whether the signature is good,
+	// was already settled by Authenticate.
+	//
+	// Deliberately not checking HasKey: it looks only at verify_keys and
+	// ignores old_verify_keys, so a request signed with a rotated-but-still-
+	// valid key — which Synapse accepts — would be refused here.
 	res, err := v.auth.Keys.LoadKeys(parsed.Origin)
-	if err == nil && res != nil && res.HasKey(parsed.KeyID) &&
-		time.Until(res.ValidUntilTS.Time) > 0 {
+	if err == nil && res != nil && time.Until(res.ValidUntilTS.Time) > 0 {
 		return nil
 	}
 

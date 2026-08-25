@@ -68,9 +68,9 @@ func (s *Store) applyRedactions(ctx context.Context, events map[string]*Event) e
 	if err != nil {
 		return err
 	}
-	if len(redactions) == 0 {
-		return nil
-	}
+	// Deliberately no early return when there are no redaction rows: MSC4293
+	// ban redactions are a separate source, and an event redacted by a ban has
+	// no row in `redactions` at all.
 
 	// Redaction events that still need authorising have to be loaded so their
 	// sender and room can be checked.
@@ -92,9 +92,34 @@ func (s *Store) applyRedactions(ctx context.Context, events map[string]*Event) e
 		}
 	}
 
+	// MSC4293: a ban with redact_events redacts everything that user sent in
+	// the room, with no per-event redaction row.
+	rooms := make([]string, 0, len(events))
+	users := make([]string, 0, len(events))
+	senders := make(map[string]string, len(events))
+	for id, ev := range events {
+		sender := senderOfEvent(ev.JSON)
+		if sender == "" {
+			continue
+		}
+		senders[id] = sender
+		rooms = append(rooms, ev.RoomID)
+		users = append(users, sender)
+	}
+	bans, err := s.getBanRedactions(ctx, rooms, users)
+	if err != nil {
+		return err
+	}
+
 	for id, ev := range events {
 		rows, ok := redactions[id]
 		if !ok {
+			// No redaction event, but a ban may still redact this.
+			if br, banned := bans[ev.RoomID+"\x00"+senders[id]]; banned && banAppliesTo(br, ev) {
+				redacted := *ev
+				redacted.RedactedBy = br.RedactingEventID
+				events[id] = &redacted
+			}
 			continue
 		}
 		// Synapse deliberately ignores redactions of m.room.create.
@@ -103,7 +128,13 @@ func (s *Store) applyRedactions(ctx context.Context, events map[string]*Event) e
 		}
 		redactionID, ok := shouldRedact(ev, rows, redactionEvents)
 		if !ok {
-			continue
+			// A ban can still redact an event whose own redaction did not
+			// pass the recheck.
+			if br, banned := bans[ev.RoomID+"\x00"+senders[id]]; banned && banAppliesTo(br, ev) {
+				redactionID = br.RedactingEventID
+			} else {
+				continue
+			}
 		}
 		// Replace with a copy rather than mutating in place. The event may be
 		// a cached pointer shared with other in-flight requests, so writing to
@@ -158,4 +189,89 @@ func senderDomain(eventJSON []byte) string {
 		return ""
 	}
 	return ev.Sender[idx+1:]
+}
+
+// banRedaction is an MSC4293 "redact events on ban" entry: every event a user
+// sent in a room, up to an optional end point, is served redacted.
+type banRedaction struct {
+	// RedactingEventID is the ban that caused it, used the same way a
+	// redaction event ID is.
+	RedactingEventID string
+	// EndOrdering, when non-zero, is the stream position of the membership
+	// change that ended the ban's redaction. Events at or after it are not
+	// redacted.
+	EndOrdering int64
+}
+
+// getBanRedactions returns MSC4293 ban redactions covering the given
+// (room, sender) pairs.
+//
+// This is a second, entirely separate source of redaction from the redactions
+// table. A moderator banning a spammer with `org.matrix.msc4293.redact_events`
+// redacts everything that user sent in the room at once, without a redaction
+// event per message — so an event can be redacted with no row in `redactions`
+// at all, its stored JSON still holding the original content.
+//
+// Missing this served the full content of banned users' events to remote
+// servers. It was found in shadow mode against a real spam wave, and it is not
+// a corner case: 9,106 rows across 122 rooms on this deployment.
+func (s *Store) getBanRedactions(ctx context.Context, rooms, users []string) (map[string]banRedaction, error) {
+	out := make(map[string]banRedaction)
+	if len(rooms) == 0 {
+		return out, nil
+	}
+	const q = `
+		SELECT room_id, user_id, redacting_event_id, redact_end_ordering
+		FROM room_ban_redactions
+		WHERE (room_id, user_id) IN (SELECT * FROM unnest($1::text[], $2::text[]))`
+
+	rows, err := s.pool.Query(ctx, q, rooms, users)
+	if err != nil {
+		return nil, fmt.Errorf("store: ban redactions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var roomID, userID, redactingID string
+		var endOrdering *int64
+		if err := rows.Scan(&roomID, &userID, &redactingID, &endOrdering); err != nil {
+			return nil, fmt.Errorf("store: scan ban redaction: %w", err)
+		}
+		br := banRedaction{RedactingEventID: redactingID}
+		if endOrdering != nil {
+			br.EndOrdering = *endOrdering
+		}
+		out[roomID+"\x00"+userID] = br
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: ban redaction rows: %w", err)
+	}
+	return out, nil
+}
+
+// senderOfEvent reads the sender from stored event JSON.
+func senderOfEvent(raw []byte) string {
+	var ev struct {
+		Sender string `json:"sender"`
+	}
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		return ""
+	}
+	return ev.Sender
+}
+
+// banAppliesTo reports whether a ban redaction covers this event.
+//
+// A ban that was later lifted records the stream position where its redaction
+// stops; events at or after it are served normally. Backfilled events have a
+// negative stream ordering and so always fall before it, which is deliberate
+// in Synapse and mirrored here.
+func banAppliesTo(br banRedaction, ev *Event) bool {
+	if ev.Type == "m.room.create" {
+		// Synapse ignores redactions of m.room.create.
+		return false
+	}
+	if br.EndOrdering != 0 && ev.StreamOrdering >= br.EndOrdering {
+		return false
+	}
+	return true
 }

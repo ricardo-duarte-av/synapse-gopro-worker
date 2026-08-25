@@ -19,6 +19,10 @@ type Event struct {
 	JSON []byte
 	// InternalMetadata is Synapse's private per-event metadata.
 	InternalMetadata []byte
+	// StreamOrdering positions the event in the room's stream. It is needed to
+	// honour MSC4293's redact_end_ordering: a ban's redaction applies only to
+	// events before the membership change that ended it.
+	StreamOrdering int64
 	// Outlier reports that we hold the event but not the state around it, so
 	// /state and /state_ids cannot be answered at this event.
 	//
@@ -48,7 +52,7 @@ func (e *Event) IsStateEvent() bool { return e.StateKey != nil }
 const eventQuery = `
 	SELECT e.event_id, e.room_id, e.type, e.state_key,
 	       ej.json, ej.internal_metadata, ej.format_version,
-	       r.room_version, rej.reason, e.outlier
+	       r.room_version, rej.reason, e.outlier, e.stream_ordering
 	FROM events AS e
 	  JOIN event_json AS ej USING (event_id)
 	  LEFT JOIN rooms AS r ON r.room_id = e.room_id
@@ -119,7 +123,8 @@ func (s *Store) getEventsRaw(ctx context.Context, eventIDs []string) (map[string
 		var formatVersion *int
 		var roomVersion, rejected *string
 		if err := rows.Scan(&e.EventID, &e.RoomID, &e.Type, &e.StateKey,
-			&e.JSON, &e.InternalMetadata, &formatVersion, &roomVersion, &rejected, &e.Outlier); err != nil {
+			&e.JSON, &e.InternalMetadata, &formatVersion, &roomVersion, &rejected,
+			&e.Outlier, &e.StreamOrdering); err != nil {
 			return nil, fmt.Errorf("store: scan event: %w", err)
 		}
 		if formatVersion != nil {

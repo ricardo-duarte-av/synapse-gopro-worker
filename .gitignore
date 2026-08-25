@@ -40,3 +40,7 @@ CLAUDE.md
 # Credentials — never commit
 .token
 *.token
+
+# Homeserver signing key — must never be committed
+*.signing.key
+signing.key

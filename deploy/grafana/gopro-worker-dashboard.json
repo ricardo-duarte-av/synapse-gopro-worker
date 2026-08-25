@@ -1611,12 +1611,120 @@
       ]
     },
     {
+      "type": "timeseries",
+      "title": "Auth verdicts",
+      "description": "we_accept_synapse_rejects is the promotion blocker: we accepted a request Synapse rejected on the merits. synapse_key_fetch_failed is different -- Synapse could not obtain the origin's key, so it never judged the signature, and its 401 says nothing about whether accepting was right.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (result) (increase(gopro_auth_verdicts_total{job=~\"$job\"}[$bucket]))",
+          "legendFormat": "{{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Comparisons skipped",
+      "description": "Requests not counted either way, so the match rate is measured over less traffic than it appears. upstream_key_fetch_failed means Synapse could not fetch the origin's keys and we could -- not a defect, but a rise means something changed in key resolution.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason) (increase(gopro_shadow_skipped_total{job=~\"$job\"}[$bucket]))",
+          "legendFormat": "{{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Rate limiting",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 48,
+        "y": 56,
         "w": 24,
         "h": 1
       },
@@ -1632,7 +1740,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 49,
+        "y": 57,
         "w": 4,
         "h": 4
       },
@@ -1702,7 +1810,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 49,
+        "y": 57,
         "w": 4,
         "h": 4
       },
@@ -1764,7 +1872,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 49,
+        "y": 57,
         "w": 4,
         "h": 4
       },
@@ -1825,7 +1933,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 49,
+        "y": 57,
         "w": 4,
         "h": 4
       },
@@ -1886,7 +1994,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 49,
+        "y": 57,
         "w": 4,
         "h": 4
       },
@@ -1948,7 +2056,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 49,
+        "y": 57,
         "w": 4,
         "h": 4
       },
@@ -2018,7 +2126,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 53,
+        "y": 61,
         "w": 12,
         "h": 8
       },
@@ -2092,7 +2200,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 53,
+        "y": 61,
         "w": 12,
         "h": 8
       },
@@ -2162,7 +2270,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 62,
+        "y": 70,
         "w": 24,
         "h": 1
       },
@@ -2178,7 +2286,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 63,
+        "y": 71,
         "w": 5,
         "h": 4
       },
@@ -2248,7 +2356,7 @@
       },
       "gridPos": {
         "x": 5,
-        "y": 63,
+        "y": 71,
         "w": 5,
         "h": 4
       },
@@ -2310,7 +2418,7 @@
       },
       "gridPos": {
         "x": 10,
-        "y": 63,
+        "y": 71,
         "w": 5,
         "h": 4
       },
@@ -2371,7 +2479,7 @@
       },
       "gridPos": {
         "x": 15,
-        "y": 63,
+        "y": 71,
         "w": 5,
         "h": 4
       },
@@ -2437,7 +2545,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 63,
+        "y": 71,
         "w": 4,
         "h": 4
       },
@@ -2498,7 +2606,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 67,
+        "y": 75,
         "w": 12,
         "h": 8
       },
@@ -2563,7 +2671,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 67,
+        "y": 75,
         "w": 12,
         "h": 8
       },
@@ -2637,7 +2745,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 75,
+        "y": 83,
         "w": 12,
         "h": 7
       },
@@ -2711,7 +2819,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 75,
+        "y": 83,
         "w": 12,
         "h": 7
       },
@@ -2774,7 +2882,7 @@
       "description": "Share of /event's filtered state-group lookups answered from cache rather than a recursive walk of state_groups_state. 'filtered_cache' is the per-(group,filter) cache; 'state_cache' means the whole map happened to be resident.",
       "gridPos": {
         "x": 0,
-        "y": 83,
+        "y": 91,
         "w": 6,
         "h": 4
       },
@@ -2846,7 +2954,7 @@
       "description": "Filtered state-group resolutions by query kind and source. 'database' means a recursive CTE over state_groups_state; 'cache' means the whole map was already resolved.",
       "gridPos": {
         "x": 6,
-        "y": 83,
+        "y": 91,
         "w": 18,
         "h": 4
       },
@@ -2896,7 +3004,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 87,
+        "y": 95,
         "w": 24,
         "h": 1
       },
@@ -2912,7 +3020,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 88,
+        "y": 96,
         "w": 4,
         "h": 4
       },
@@ -2994,7 +3102,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 88,
+        "y": 96,
         "w": 4,
         "h": 4
       },
@@ -3056,7 +3164,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 88,
+        "y": 96,
         "w": 4,
         "h": 4
       },
@@ -3122,7 +3230,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 88,
+        "y": 96,
         "w": 12,
         "h": 8
       },
@@ -3176,7 +3284,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 92,
+        "y": 100,
         "w": 12,
         "h": 4
       },
@@ -3226,7 +3334,7 @@
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 96,
+        "y": 104,
         "w": 24,
         "h": 1
       },

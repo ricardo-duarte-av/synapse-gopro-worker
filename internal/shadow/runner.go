@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -203,6 +204,10 @@ func (r *Runner) run(req Request, proxy ProxyResult) {
 func (r *Runner) finish(req Request, proxy ProxyResult, elapsed time.Duration, nativeBody []byte, nativeStatus int) {
 	agree, compareBodies := CompareStatus(proxy.Status, nativeStatus)
 	if !agree {
+		if nativeStatus != http.StatusUnauthorized && upstreamCouldNotFetchKeys(proxy) {
+			r.upstreamKeyFetchFailed(req, proxy, nativeStatus)
+			return
+		}
 		r.record(req, proxy, elapsed, &difflog.Record{
 			Kind:         difflog.KindStatus,
 			NativeStatus: nativeStatus,
@@ -273,9 +278,15 @@ func (r *Runner) verifyOrigin(req Request, proxy ProxyResult) (string, *matrixst
 	synapseAccepted := proxy.Status != http.StatusUnauthorized && proxy.Status != http.StatusForbidden
 
 	switch {
+	case result.OK() && proxy.Status == http.StatusUnauthorized && upstreamCouldNotFetchKeys(proxy):
+		// Synapse never judged the signature: it could not obtain the key to
+		// judge it with. Its 401 therefore says nothing about whether
+		// accepting was right, and counting it as the dangerous direction
+		// would bury real ones. Kept as its own verdict, not hidden.
+		authVerdicts.WithLabelValues("synapse_key_fetch_failed").Inc()
 	case result.OK() && proxy.Status == http.StatusUnauthorized:
-		// We would have accepted what Synapse rejected. This is the dangerous
-		// direction and must block promotion.
+		// We would have accepted what Synapse rejected *on the merits*. This
+		// is the dangerous direction and must block promotion.
 		authVerdicts.WithLabelValues("we_accept_synapse_rejects").Inc()
 		r.logAuthMismatch(req, proxy, result.Origin, "", "we accepted a request Synapse rejected")
 	case !result.OK() && synapseAccepted:
@@ -432,4 +443,60 @@ func DecodeParam(s string) string {
 		return decoded
 	}
 	return s
+}
+
+// upstreamCouldNotFetchKeys reports that Synapse's 401 says it failed to
+// *obtain* a key, rather than that it judged the request's signature bad.
+//
+// The distinction is the whole point. "Invalid signature for server X" is a
+// verdict on the request, and if we accepted something Synapse rejected that
+// way it is a security failure on our side. "Failed to find any key to
+// satisfy" is not a verdict at all — Synapse never evaluated the signature,
+// because it could not get the key to evaluate it with. Its 401 then says
+// nothing about whether accepting the request was right.
+//
+// This is not hypothetical or rare. matrix.ryuu.eu publishes an AAAA record
+// pointing at a dead tunnel; Go's dialler falls back to IPv4 after 300ms
+// (Happy Eyeballs) and fetches a perfectly valid key, while Twisted — which
+// Synapse's federation client is built on — connects to what it resolved and
+// waits. Every notary on the network is serving a stale copy of that server's
+// key from 2025-12-23, so Synapse cannot recover on its own. Counting this as
+// a mismatch would mean treating "we succeeded where Synapse could not" as a
+// defect, and would bury real disagreements under it.
+//
+// Deliberately narrow: it matches only this one error, only on a 401, and
+// only when the body was captured whole.
+func upstreamCouldNotFetchKeys(proxy ProxyResult) bool {
+	if proxy.Status != http.StatusUnauthorized || proxy.Truncated || len(proxy.Body) == 0 {
+		return false
+	}
+	var e struct {
+		ErrCode string `json:"errcode"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(proxy.Body, &e); err != nil {
+		return false
+	}
+	return e.ErrCode == "M_UNAUTHORIZED" &&
+		strings.Contains(e.Error, "Failed to find any key to satisfy")
+}
+
+// upstreamKeyFetchFailed records a disagreement caused by Synapse being unable
+// to fetch the origin's keys.
+//
+// It is counted and logged rather than dropped. It does not belong in the
+// mismatch ratio, because nothing here is wrong on our side — but it must stay
+// visible, both because a sudden rise means something broke in key resolution
+// and because "we answered where Synapse could not" is a claim that should
+// always have evidence behind it.
+func (r *Runner) upstreamKeyFetchFailed(req Request, proxy ProxyResult, nativeStatus int) {
+	shadowSkipped.WithLabelValues(req.Endpoint, "upstream_key_fetch_failed").Inc()
+	r.log.Info().
+		Str("endpoint", req.Endpoint).
+		Str("origin", req.Origin).
+		Str("uri", req.URI).
+		Int("synapse_status", proxy.Status).
+		Int("native_status", nativeStatus).
+		Str("synapse_error", string(proxy.Body)).
+		Msg("Synapse could not fetch the origin's keys; we verified it. Not counted as a mismatch")
 }

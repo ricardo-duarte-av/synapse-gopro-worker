@@ -177,3 +177,41 @@ func TestSynapseOnlyPrevContentIsTolerated(t *testing.T) {
 		t.Error("a real replaces_state difference was not reported")
 	}
 }
+
+// Synapse failing to *fetch* a key is not a verdict on the request, so it must
+// not be counted as a disagreement. Synapse judging a signature bad is, and
+// must never be suppressed — that is the security alarm.
+func TestUpstreamKeyFetchFailureIsRecognised(t *testing.T) {
+	body := func(errcode, msg string) []byte {
+		return []byte(`{"errcode":"` + errcode + `","error":"` + msg + `"}`)
+	}
+	for _, tc := range []struct {
+		name  string
+		proxy ProxyResult
+		want  bool
+	}{
+		{"key fetch failed", ProxyResult{Status: 401, Body: body("M_UNAUTHORIZED",
+			`Failed to find any key to satisfy: _FetchKeyRequest(server_name='ryuu.eu', key_ids=['ed25519:a_EMUw'])`)}, true},
+
+		// Everything below is a real verdict, or not judgeable, and must not
+		// be waved through.
+		{"invalid signature", ProxyResult{Status: 401, Body: body("M_UNAUTHORIZED",
+			"Invalid signature for server ryuu.eu with key ed25519:a_EMUw")}, false},
+		{"missing auth header", ProxyResult{Status: 401, Body: body("M_UNAUTHORIZED",
+			"Missing Authorization headers")}, false},
+		{"forbidden, not unauthorized", ProxyResult{Status: 403, Body: body("M_FORBIDDEN",
+			"Failed to find any key to satisfy: whatever")}, false},
+		{"wrong errcode", ProxyResult{Status: 401, Body: body("M_FORBIDDEN",
+			"Failed to find any key to satisfy: whatever")}, false},
+		{"truncated body cannot be judged", ProxyResult{Status: 401, Truncated: true, Body: body("M_UNAUTHORIZED",
+			"Failed to find any key to satisfy: whatever")}, false},
+		{"empty body", ProxyResult{Status: 401}, false},
+		{"not json", ProxyResult{Status: 401, Body: []byte("nope")}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := upstreamCouldNotFetchKeys(tc.proxy); got != tc.want {
+				t.Errorf("upstreamCouldNotFetchKeys = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

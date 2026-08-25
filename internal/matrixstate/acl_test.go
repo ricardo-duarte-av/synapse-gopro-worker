@@ -102,3 +102,61 @@ func TestParseServerACLRejectsInvalidJSON(t *testing.T) {
 		t.Error("expected an error for invalid JSON")
 	}
 }
+
+// The ACL cache is keyed by the ACL event's ID, not the room's, so a room that
+// changes its ACL cannot be served the old one — the key changes with it.
+// This is the property that makes caching a *mutable* piece of room state safe
+// without any invalidation signal.
+func TestServerACLCacheKeyedByEventNotRoom(t *testing.T) {
+	deny := func(server string) []byte {
+		return []byte(`{"content":{"deny":["` + server + `"],"allow":["*"]}}`)
+	}
+
+	r := NewResolver(nil)
+
+	// Parse and cache an ACL under one event id.
+	first, err := ParseServerACL(deny("evil.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.acls.Add("$acl1", first)
+
+	if got, ok := r.acls.Get("$acl1"); !ok || got.Allowed("evil.example") {
+		t.Error("cached ACL did not deny the server it was built to deny")
+	}
+
+	// A new ACL event for the same room has a different id, so it cannot
+	// collide with the cached one.
+	if _, ok := r.acls.Get("$acl2"); ok {
+		t.Error("a different ACL event id hit the cached entry")
+	}
+
+	second, err := ParseServerACL(deny("other.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.acls.Add("$acl2", second)
+
+	got1, _ := r.acls.Get("$acl1")
+	got2, _ := r.acls.Get("$acl2")
+	if got1.Allowed("evil.example") || !got1.Allowed("other.example") {
+		t.Error("the first ACL was altered by caching the second")
+	}
+	if got2.Allowed("other.example") || !got2.Allowed("evil.example") {
+		t.Error("the second ACL did not take effect")
+	}
+}
+
+// A malformed ACL is cached too, so it is not re-parsed on every request. It
+// must still mean "no restriction", as Synapse treats it.
+func TestMalformedACLIsCachedAsNoRestriction(t *testing.T) {
+	r := NewResolver(nil)
+	r.acls.Add("$bad", nil)
+	got, ok := r.acls.Get("$bad")
+	if !ok {
+		t.Fatal("a malformed ACL was not cached, so it would be re-parsed every request")
+	}
+	if !got.Allowed("anyone.example") {
+		t.Error("a malformed ACL restricted access; Synapse ignores bad values")
+	}
+}

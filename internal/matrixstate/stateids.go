@@ -8,16 +8,34 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
 	"github.com/daedric/synapse-gopro-worker/internal/store"
 )
 
 // Resolver answers the federation read endpoints from the database.
 type Resolver struct {
 	db *store.Store
+	// acls holds parsed server ACLs, keyed by the ACL *event* ID.
+	//
+	// Keying on the event rather than the room is what makes this safe: an
+	// event's content is immutable, so a hit can never be stale, while which
+	// event is current stays a live database lookup on every request. A room
+	// that changes its ACL simply produces a different key.
+	//
+	// It is worth caching because ParseServerACL compiles a regex per allow
+	// and deny entry, which measured at ~0.9ms per request — the single
+	// largest cost in /state_ids, and all of it recomputing the same thing.
+	acls *cache.LRU[string, *ServerACL]
 }
 
 // NewResolver builds a Resolver over the given store.
-func NewResolver(db *store.Store) *Resolver { return &Resolver{db: db} }
+func NewResolver(db *store.Store) *Resolver {
+	return &Resolver{
+		db: db,
+		// ACLs are small and rooms are few; this is generous.
+		acls: cache.NewLRU[string, *ServerACL]("server_acls", cache.MB(8), sizeOfACL),
+	}
+}
 
 // StateIDsResponse is the body of GET /_matrix/federation/v1/state_ids.
 type StateIDsResponse struct {
@@ -99,20 +117,46 @@ func (r *Resolver) checkAccess(ctx context.Context, origin, roomID string) error
 // serverACL loads the room's m.room.server_acl, returning nil when the room has
 // none, which means no restriction.
 func (r *Resolver) serverACL(ctx context.Context, roomID string) (*ServerACL, error) {
-	raw, err := r.db.GetCurrentStateEventJSON(ctx, roomID, "m.room.server_acl", "")
+	// Which event is current is always asked fresh, so a changed ACL takes
+	// effect on the very next request.
+	eventID, raw, err := r.db.GetCurrentStateEvent(ctx, roomID, "m.room.server_acl", "")
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load server acl: %w", err)
 	}
+
+	if acl, ok := r.acls.Get(eventID); ok {
+		return acl, nil
+	}
 	acl, err := ParseServerACL(raw)
 	if err != nil {
 		// A malformed ACL event must not break the room; Synapse ignores bad
 		// values rather than failing the request.
-		return nil, nil
+		acl = nil
 	}
+	// Cached either way: a malformed ACL is malformed forever, and re-parsing
+	// it on every request would be the same waste as re-parsing a good one.
+	r.acls.Add(eventID, acl)
 	return acl, nil
+}
+
+// sizeOfACL approximates a parsed ACL's footprint. Compiled regexes dominate
+// and their size is not observable, so this uses the pattern lengths as a
+// stand-in — enough to keep the bound meaningful.
+func sizeOfACL(acl *ServerACL) int64 {
+	if acl == nil {
+		return 64
+	}
+	n := int64(128)
+	for _, re := range acl.allow {
+		n += int64(len(re.String())) + 256
+	}
+	for _, re := range acl.deny {
+		n += int64(len(re.String())) + 256
+	}
+	return n
 }
 
 // stateIDsForEvent returns the state *before* an event.

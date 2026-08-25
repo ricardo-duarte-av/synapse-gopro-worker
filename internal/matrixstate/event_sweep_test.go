@@ -163,8 +163,22 @@ func TestLiveRedactionSweep(t *testing.T) {
 			t.Errorf("%s: redacted event is not valid JSON: %v", sm.eventID, err)
 			continue
 		}
-		// Redaction must never destroy the fields that make an event verifiable.
+		var stored map[string]any
+		if err := json.Unmarshal(ev.JSON, &stored); err != nil {
+			t.Errorf("%s: stored event is not valid JSON: %v", sm.eventID, err)
+			continue
+		}
+		// Redaction must never destroy the fields that make an event
+		// verifiable -- but only those the event actually had. In room version
+		// 12 the room ID is derived from the create event's hash, so the
+		// create event itself carries no room_id: measured here, 0 of the v12
+		// m.room.create events have one and all 30,869 other v12 events do.
+		// Requiring it unconditionally therefore fails on a v12 create event
+		// that is perfectly well formed.
 		for _, field := range []string{"type", "room_id", "sender", "signatures", "hashes"} {
+			if _, had := stored[field]; !had {
+				continue
+			}
 			if _, ok := out[field]; !ok {
 				t.Errorf("%s (version %s): redaction dropped %q",
 					sm.eventID, sm.roomVersion, field)

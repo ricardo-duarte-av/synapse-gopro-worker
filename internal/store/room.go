@@ -111,21 +111,33 @@ func (s *Store) IsPartialStateRoom(ctx context.Context, roomID string) (bool, er
 // It is used for m.room.server_acl, which gates access independently of
 // membership.
 func (s *Store) GetCurrentStateEventJSON(ctx context.Context, roomID, evType, stateKey string) ([]byte, error) {
+	_, raw, err := s.GetCurrentStateEvent(ctx, roomID, evType, stateKey)
+	return raw, err
+}
+
+// GetCurrentStateEvent returns the ID and JSON of a current state event.
+//
+// The ID matters as much as the JSON: an event's content is immutable, so
+// anything derived from it can be cached against the ID forever, while the
+// question of *which* event is current stays a live lookup. That split is what
+// lets the server ACL be parsed once without ever serving a stale one.
+func (s *Store) GetCurrentStateEvent(ctx context.Context, roomID, evType, stateKey string) (string, []byte, error) {
 	const q = `
-		SELECT ej.json
+		SELECT cse.event_id, ej.json
 		FROM current_state_events AS cse
 		JOIN event_json AS ej USING (event_id)
 		WHERE cse.room_id = $1 AND cse.type = $2 AND cse.state_key = $3`
 
+	var eventID string
 	var raw []byte
-	err := s.pool.QueryRow(ctx, q, roomID, evType, stateKey).Scan(&raw)
+	err := s.pool.QueryRow(ctx, q, roomID, evType, stateKey).Scan(&eventID, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
+		return "", nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("store: get current state event: %w", err)
+		return "", nil, fmt.Errorf("store: get current state event: %w", err)
 	}
-	return raw, nil
+	return eventID, raw, nil
 }
 
 // ServerKeyJSON is a cached published key response for a remote server, as

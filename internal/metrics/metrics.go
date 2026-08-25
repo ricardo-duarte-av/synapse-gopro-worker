@@ -8,11 +8,18 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/cache"
 )
 
-// latencyBuckets span the range that matters for these endpoints: /state_ids on
-// a small room is single-digit milliseconds, while /state on a large room can
-// take seconds.
+// latencyBuckets span the range that matters for these endpoints.
+//
+// The sub-millisecond end is not decoration. A warm /event resolves in about
+// 0.9ms, so with the old floor of 1ms every fast request landed in the same
+// bucket and the reported p50 was linear interpolation across 1ms..2.5ms
+// rather than a measurement. Half the range we care about was invisible.
+//
+// The top end stays coarse on purpose: above 100ms the question is only "how
+// bad", and /state_ids on a large room can take seconds.
 var latencyBuckets = []float64{
-	.001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30,
+	.0001, .00025, .0005, .00075, .001, .0015, .002, .003, .004, .005,
+	.0075, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30,
 }
 
 // RegisterRateLimitHosts exports how many origin servers currently have rate

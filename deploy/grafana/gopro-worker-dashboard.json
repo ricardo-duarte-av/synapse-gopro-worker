@@ -2765,12 +2765,138 @@
       ]
     },
     {
+      "type": "stat",
+      "title": "Filtered state from cache",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Share of /event's filtered state-group lookups answered from an already-cached whole map instead of a recursive walk of state_groups_state. This is a question about how much /event and /state_ids traffic overlaps, which only production can answer.",
+      "gridPos": {
+        "x": 0,
+        "y": 83,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.3
+              },
+              {
+                "color": "green",
+                "value": 0.6
+              }
+            ]
+          },
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gopro_filtered_state_total{source=\"cache\", job=~\"$job\"}[$bucket])) / clamp_min(sum(rate(gopro_filtered_state_total{job=~\"$job\"}[$bucket])), 0.001)",
+          "legendFormat": "from cache",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Filtered state lookups",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Filtered state-group resolutions by query kind and source. 'database' means a recursive CTE over state_groups_state; 'cache' means the whole map was already resolved.",
+      "gridPos": {
+        "x": 6,
+        "y": 83,
+        "w": 18,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (query, source) (rate(gopro_filtered_state_total{job=~\"$job\"}[$bucket]))",
+          "legendFormat": "{{query}} / {{source}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Replication (cache invalidation)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 83,
+        "y": 87,
         "w": 24,
         "h": 1
       },
@@ -2786,7 +2912,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 84,
+        "y": 88,
         "w": 4,
         "h": 4
       },
@@ -2868,7 +2994,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 84,
+        "y": 88,
         "w": 4,
         "h": 4
       },
@@ -2930,7 +3056,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 84,
+        "y": 88,
         "w": 4,
         "h": 4
       },
@@ -2996,7 +3122,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 84,
+        "y": 88,
         "w": 12,
         "h": 8
       },
@@ -3050,7 +3176,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 88,
+        "y": 92,
         "w": 12,
         "h": 4
       },
@@ -3100,7 +3226,7 @@
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 92,
+        "y": 96,
         "w": 24,
         "h": 1
       },

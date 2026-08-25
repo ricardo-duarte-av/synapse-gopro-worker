@@ -134,8 +134,59 @@ const stateGroupFilteredQuery = `
 
 // GetFilteredStateForGroup resolves the state at a group for the given event
 // types only.
+//
+// When the whole map for the group is already cached the filter is applied in
+// memory, which is what Synapse does: its stateGroupCache is a dictionary cache
+// and can answer a filtered lookup from a cached group. Ours held whole maps
+// only, so /event's two filtered walks went to the database on every request
+// even when the map was sitting in memory a few bytes away.
+//
+// The cache is deliberately only *read* here, never populated: resolving a
+// whole state map to answer "what is the history visibility" would mean reading
+// every state event in the room, which is 145k events in the largest room here.
+// A miss must stay cheap.
 func (s *Store) GetFilteredStateForGroup(ctx context.Context, group int64, types []string) (map[StateKey]string, error) {
+	if state, ok := s.caches.stateGroups.Get(group); ok {
+		storeMetrics().filteredState.WithLabelValues("types", "cache").Inc()
+		return filterByTypes(state, types), nil
+	}
+	storeMetrics().filteredState.WithLabelValues("types", "database").Inc()
 	return s.filteredState(ctx, stateGroupFilteredQuery, group, types, nil)
+}
+
+// filterByTypes selects the entries whose type is one of types.
+//
+// It always builds a new map. Returning the cached one — or any view onto it —
+// would hand a caller something it may adjust in place, which has already been
+// a correctness bug here twice.
+func filterByTypes(state map[StateKey]string, types []string) map[StateKey]string {
+	want := make(map[string]struct{}, len(types))
+	for _, t := range types {
+		want[t] = struct{}{}
+	}
+	out := make(map[StateKey]string)
+	for k, v := range state {
+		if _, ok := want[k.Type]; ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// filterMembersForServer selects membership entries for one server.
+//
+// It reproduces the SQL prefilter (LIKE '%:server') rather than checking the
+// domain exactly, so both paths return the same set and the caller's exact
+// domain check stays the single place that decides.
+func filterMembersForServer(state map[StateKey]string, serverName string) map[StateKey]string {
+	suffix := ":" + serverName
+	out := make(map[StateKey]string)
+	for k, v := range state {
+		if k.Type == "m.room.member" && strings.HasSuffix(k.StateKey, suffix) {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // stateGroupMemberQuery is the same walk restricted to one server's membership
@@ -165,6 +216,11 @@ func (s *Store) GetServerMembershipStateForGroup(ctx context.Context, group int6
 	if strings.ContainsAny(serverName, "%_") {
 		return nil, fmt.Errorf("store: invalid server name %q", serverName)
 	}
+	if state, ok := s.caches.stateGroups.Get(group); ok {
+		storeMetrics().filteredState.WithLabelValues("members", "cache").Inc()
+		return filterMembersForServer(state, serverName), nil
+	}
+	storeMetrics().filteredState.WithLabelValues("members", "database").Inc()
 	return s.filteredState(ctx, stateGroupMemberQuery, group, nil, ptr("%:"+serverName))
 }
 

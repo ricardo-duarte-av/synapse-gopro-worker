@@ -55,9 +55,26 @@ func TestLiveFilteredStateMatchesDatabase(t *testing.T) {
 	types := []string{"m.room.history_visibility"}
 	var compared int
 
+	// There are three sources now and all three must agree: the SQL walk, the
+	// whole-map cache filtered in memory, and the filtered cache itself. The
+	// purges matter — without them a later call just replays the first
+	// answer and the comparison is vacuous.
 	for _, g := range groups {
-		// Straight from the database, cache cold for this group.
-		db.caches.stateGroups.Purge()
+		// Ground truth: the raw SQL walks, bypassing every cache. Comparing
+		// the cached paths only against each other would pass even when all
+		// of them are wrong in the same way -- which is exactly what a cache
+		// key collision looks like.
+		wantTypes, err := db.filteredState(ctx, stateGroupFilteredQuery, g, types, nil)
+		if err != nil {
+			t.Fatalf("group %d: %v", g, err)
+		}
+		wantMembers, err := db.filteredState(ctx, stateGroupMemberQuery, g, nil, ptr("%:"+server))
+		if err != nil {
+			t.Fatalf("group %d: %v", g, err)
+		}
+
+		// 1. Straight from the database, every cache cold.
+		db.PurgeCaches()
 		fromDBTypes, err := db.GetFilteredStateForGroup(ctx, g, types)
 		if err != nil {
 			t.Fatalf("group %d: %v", g, err)
@@ -67,29 +84,50 @@ func TestLiveFilteredStateMatchesDatabase(t *testing.T) {
 			t.Fatalf("group %d: %v", g, err)
 		}
 
-		// Now warm the whole map and take the cached path.
+		// 2. Filtered from the whole map: drop the filtered answers, warm the
+		//    whole map, ask again.
+		db.caches.filteredState.Purge()
 		if _, err := db.GetStateForGroup(ctx, g); err != nil {
 			t.Fatalf("group %d: %v", g, err)
 		}
-		fromCacheTypes, err := db.GetFilteredStateForGroup(ctx, g, types)
+		fromWholeTypes, err := db.GetFilteredStateForGroup(ctx, g, types)
 		if err != nil {
 			t.Fatalf("group %d: %v", g, err)
 		}
-		fromCacheMembers, err := db.GetServerMembershipStateForGroup(ctx, g, server)
+		fromWholeMembers, err := db.GetServerMembershipStateForGroup(ctx, g, server)
 		if err != nil {
 			t.Fatalf("group %d: %v", g, err)
 		}
 
-		if !maps.Equal(fromDBTypes, fromCacheTypes) {
-			t.Errorf("group %d: type filter differs\n db:    %v\n cache: %v", g, fromDBTypes, fromCacheTypes)
+		// 3. From the filtered cache, which step 2 just populated.
+		fromFilteredTypes, err := db.GetFilteredStateForGroup(ctx, g, types)
+		if err != nil {
+			t.Fatalf("group %d: %v", g, err)
 		}
-		if !maps.Equal(fromDBMembers, fromCacheMembers) {
-			t.Errorf("group %d: member filter differs (%d vs %d entries)",
-				g, len(fromDBMembers), len(fromCacheMembers))
+		fromFilteredMembers, err := db.GetServerMembershipStateForGroup(ctx, g, server)
+		if err != nil {
+			t.Fatalf("group %d: %v", g, err)
+		}
+
+		for _, c := range []struct {
+			what string
+			a, b map[StateKey]string
+		}{
+			{"types via database", wantTypes, fromDBTypes},
+			{"types via whole map", wantTypes, fromWholeTypes},
+			{"types via filtered cache", wantTypes, fromFilteredTypes},
+			{"members via database", wantMembers, fromDBMembers},
+			{"members via whole map", wantMembers, fromWholeMembers},
+			{"members via filtered cache", wantMembers, fromFilteredMembers},
+		} {
+			if !maps.Equal(c.a, c.b) {
+				t.Errorf("group %d: %s differs (%d vs %d entries)\n  %v\n  %v",
+					g, c.what, len(c.a), len(c.b), c.a, c.b)
+			}
 		}
 		compared++
 	}
-	t.Logf("compared both paths across %d real state groups", compared)
+	t.Logf("compared all three sources across %d real state groups", compared)
 }
 
 // The filtered result must never alias the cached map: adjusting it in place

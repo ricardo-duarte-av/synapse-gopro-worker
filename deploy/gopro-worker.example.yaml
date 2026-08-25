@@ -64,6 +64,14 @@ database:
     events_mb: 128
     event_state_groups_mb: 32
     auth_chains_mb: 64
+    # Filtered state, keyed by state group and filter. /event asks only for the
+    # history visibility and sometimes one server's memberships; those answers
+    # are a few entries each and as immutable as the whole map they come from.
+    # Separate from state_groups_mb because the two have opposite shapes: whole
+    # maps are enormous and few (24 fill 32MB here), so a /event lookup almost
+    # never finds the group it wants -- measured at 0.8%. Filtered answers are
+    # tiny and many.
+    filtered_state_mb: 64
 
 endpoints:
   # proxy       - forward to Synapse, return its answer (Phase 1)

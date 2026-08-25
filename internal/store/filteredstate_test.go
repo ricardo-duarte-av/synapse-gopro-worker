@@ -69,3 +69,26 @@ func TestFiltersReturnIndependentMaps(t *testing.T) {
 		t.Error("the filtered map aliased its source")
 	}
 }
+
+// Different filters over the same state group must not share a cache entry.
+// Getting this wrong returns one question's answer to another, and every
+// cached path agrees with every other, so only an independent oracle catches it.
+func TestFilteredStateKeysAreDistinct(t *testing.T) {
+	seen := map[FilteredStateKey]string{}
+	add := func(k FilteredStateKey, describes string) {
+		if prev, ok := seen[k]; ok && prev != describes {
+			t.Errorf("key %+v is shared by %q and %q", k, prev, describes)
+		}
+		seen[k] = describes
+	}
+
+	add(FilteredStateKey{Group: 1, Filter: "types:m.room.history_visibility"}, "history visibility at 1")
+	add(FilteredStateKey{Group: 1, Filter: "members:matrix.org"}, "matrix.org members at 1")
+	add(FilteredStateKey{Group: 1, Filter: "members:example.com"}, "example.com members at 1")
+	add(FilteredStateKey{Group: 2, Filter: "types:m.room.history_visibility"}, "history visibility at 2")
+	add(FilteredStateKey{Group: 2, Filter: "members:matrix.org"}, "matrix.org members at 2")
+
+	if len(seen) != 5 {
+		t.Errorf("expected 5 distinct keys, got %d", len(seen))
+	}
+}

@@ -2771,7 +2771,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Share of /event's filtered state-group lookups answered from an already-cached whole map instead of a recursive walk of state_groups_state. This is a question about how much /event and /state_ids traffic overlaps, which only production can answer.",
+      "description": "Share of /event's filtered state-group lookups answered from cache rather than a recursive walk of state_groups_state. 'filtered_cache' is the per-(group,filter) cache; 'state_cache' means the whole map happened to be resident.",
       "gridPos": {
         "x": 0,
         "y": 83,
@@ -2829,7 +2829,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(gopro_filtered_state_total{source=\"cache\", job=~\"$job\"}[$bucket])) / clamp_min(sum(rate(gopro_filtered_state_total{job=~\"$job\"}[$bucket])), 0.001)",
+          "expr": "sum(rate(gopro_filtered_state_total{source=~\"filtered_cache|state_cache\", job=~\"$job\"}[$bucket])) / clamp_min(sum(rate(gopro_filtered_state_total{job=~\"$job\"}[$bucket])), 0.001)",
           "legendFormat": "from cache",
           "range": true,
           "refId": "A"

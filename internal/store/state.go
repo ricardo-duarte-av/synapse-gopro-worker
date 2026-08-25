@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -146,12 +148,68 @@ const stateGroupFilteredQuery = `
 // every state event in the room, which is 145k events in the largest room here.
 // A miss must stay cheap.
 func (s *Store) GetFilteredStateForGroup(ctx context.Context, group int64, types []string) (map[StateKey]string, error) {
-	if state, ok := s.caches.stateGroups.Get(group); ok {
-		storeMetrics().filteredState.WithLabelValues("types", "cache").Inc()
-		return filterByTypes(state, types), nil
+	sorted := append([]string(nil), types...)
+	sort.Strings(sorted)
+	key := FilteredStateKey{Group: group, Filter: "types:" + strings.Join(sorted, ",")}
+
+	return s.cachedFilteredState(ctx, key, "types",
+		func(state map[StateKey]string) map[StateKey]string { return filterByTypes(state, types) },
+		func() (map[StateKey]string, error) {
+			return s.filteredState(ctx, stateGroupFilteredQuery, group, types, nil)
+		})
+}
+
+// cachedFilteredState resolves a filtered view of a state group, cheapest
+// source first.
+//
+// The filtered answer is cached in its own right, which is the point. Relying
+// on the whole map being present did almost nothing in practice — measured at
+// 0.8% — because whole maps are enormous and few (24 of them fill 32MB here),
+// so /event almost never wants a group that /state_ids happened to resolve.
+// A filtered answer is usually a single entry, so the same memory holds orders
+// of magnitude more of them, and /event asking about the same room twice hits.
+//
+// Everything here is derived from immutable data: state at a given group is
+// fixed once written, so a filtered view of it is fixed too. This adds no
+// invalidation requirement beyond what the whole-map cache already has, and it
+// is armed and emptied alongside every other cache.
+func (s *Store) cachedFilteredState(
+	ctx context.Context,
+	key FilteredStateKey,
+	kind string,
+	fromWholeMap func(map[StateKey]string) map[StateKey]string,
+	fromDB func() (map[StateKey]string, error),
+) (map[StateKey]string, error) {
+	if state, ok := s.caches.filteredState.Get(key); ok {
+		storeMetrics().filteredState.WithLabelValues(kind, "filtered_cache").Inc()
+		return copyState(state), nil
 	}
-	storeMetrics().filteredState.WithLabelValues("types", "database").Inc()
-	return s.filteredState(ctx, stateGroupFilteredQuery, group, types, nil)
+	if whole, ok := s.caches.stateGroups.Get(key.Group); ok {
+		filtered := fromWholeMap(whole)
+		s.caches.filteredState.Add(key, filtered)
+		storeMetrics().filteredState.WithLabelValues(kind, "state_cache").Inc()
+		return copyState(filtered), nil
+	}
+
+	filtered, err := fromDB()
+	if err != nil {
+		return nil, err
+	}
+	s.caches.filteredState.Add(key, filtered)
+	storeMetrics().filteredState.WithLabelValues(kind, "database").Inc()
+	return copyState(filtered), nil
+}
+
+// copyState returns an independent copy.
+//
+// Cached maps are shared between concurrent requests, and callers do adjust
+// what they are handed. Two correctness bugs in this project were exactly that
+// (§6.1, §6.3), and these maps are small enough that copying is not worth
+// arguing about.
+func copyState(state map[StateKey]string) map[StateKey]string {
+	out := make(map[StateKey]string, len(state))
+	maps.Copy(out, state)
+	return out
 }
 
 // filterByTypes selects the entries whose type is one of types.
@@ -216,12 +274,14 @@ func (s *Store) GetServerMembershipStateForGroup(ctx context.Context, group int6
 	if strings.ContainsAny(serverName, "%_") {
 		return nil, fmt.Errorf("store: invalid server name %q", serverName)
 	}
-	if state, ok := s.caches.stateGroups.Get(group); ok {
-		storeMetrics().filteredState.WithLabelValues("members", "cache").Inc()
-		return filterMembersForServer(state, serverName), nil
-	}
-	storeMetrics().filteredState.WithLabelValues("members", "database").Inc()
-	return s.filteredState(ctx, stateGroupMemberQuery, group, nil, ptr("%:"+serverName))
+	key := FilteredStateKey{Group: group, Filter: "members:" + serverName}
+	return s.cachedFilteredState(ctx, key, "members",
+		func(state map[StateKey]string) map[StateKey]string {
+			return filterMembersForServer(state, serverName)
+		},
+		func() (map[StateKey]string, error) {
+			return s.filteredState(ctx, stateGroupMemberQuery, group, nil, ptr("%:"+serverName))
+		})
 }
 
 // filteredState runs one of the filtered state walks.

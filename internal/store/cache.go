@@ -16,6 +16,21 @@ type caches struct {
 	events          *cache.LRU[string, *Event]
 	eventStateGroup *cache.LRU[string, int64]
 	authChains      *cache.LRU[[32]byte, []string]
+	// filteredState holds state resolved at a group and restricted to a
+	// filter. Derived entirely from immutable data, so it needs no
+	// invalidation the whole-map cache does not already need.
+	filteredState *cache.LRU[FilteredStateKey, map[StateKey]string]
+}
+
+// FilteredStateKey identifies a filtered view of one state group.
+//
+// Filter is a canonical string rather than the original slice so the key stays
+// comparable: "types:a,b" for a type filter, "members:server" for one server's
+// membership. Two callers asking the same question must produce the same key,
+// so the type list is sorted before joining.
+type FilteredStateKey struct {
+	Group  int64
+	Filter string
 }
 
 func newCaches(s cache.Settings) *caches {
@@ -29,6 +44,8 @@ func newCaches(s cache.Settings) *caches {
 			"event_state_groups", cache.MB(s.EventStateGroupsMB), func(int64) int64 { return 64 }),
 		authChains: cache.NewLRU[[32]byte, []string](
 			"auth_chains", cache.MB(s.AuthChainsMB), sizeOfIDs),
+		filteredState: cache.NewLRU[FilteredStateKey, map[StateKey]string](
+			"filtered_state", cache.MB(s.FilteredStateMB), sizeOfStateMap),
 	}
 }
 
@@ -68,6 +85,7 @@ func (s *Store) CacheStats() []cache.Stats {
 		s.caches.events.Stats(),
 		s.caches.eventStateGroup.Stats(),
 		s.caches.authChains.Stats(),
+		s.caches.filteredState.Stats(),
 	}
 }
 
@@ -87,6 +105,7 @@ func (s *Store) SetCachesArmed(armed bool) {
 	s.caches.events.SetArmed(armed)
 	s.caches.eventStateGroup.SetArmed(armed)
 	s.caches.authChains.SetArmed(armed)
+	s.caches.filteredState.SetArmed(armed)
 }
 
 // PurgeCaches empties every cache without disarming it. Used when Synapse tells
@@ -101,6 +120,7 @@ func (s *Store) PurgeCaches() {
 	s.caches.events.Purge()
 	s.caches.eventStateGroup.Purge()
 	s.caches.authChains.Purge()
+	s.caches.filteredState.Purge()
 }
 
 // DropEvent removes one event from the caches that key on an event ID. Used for

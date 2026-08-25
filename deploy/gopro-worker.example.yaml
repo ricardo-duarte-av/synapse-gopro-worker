@@ -77,8 +77,25 @@ endpoints:
   # proxy       - forward to Synapse, return its answer (Phase 1)
   # shadow      - forward to Synapse and serve that, but also compute our own
   #               answer and compare (Phase 2)
-  # canary:N    - serve our own answer for N% of requests (Phase 3)
+  # canary:N    - serve our own answer for N% of requests, falling back to
+  #               Synapse for the rest and for anything that goes wrong
   # native      - serve our own answer, falling back to the proxy on error
+  #
+  # Which requests a canary serves is decided by hashing the event ID, not at
+  # random, so a retrying server keeps getting the same implementation. An
+  # alternating answer would turn any disagreement into a heisenbug.
+  #
+  # Anything that goes wrong on the native path -- verification, an error, a
+  # timeout, a panic -- falls back to Synapse with nothing yet written, so a
+  # canary can cost latency but not correctness. Watch
+  # gopro_native_fallback_total: a canary where everything falls back is
+  # indistinguishable from shadow mode, and should be visible as such.
+  #
+  # Shadow comparison continues through canary on the share still going to
+  # Synapse, so promoting an endpoint does not stop looking for disagreements.
+  #
+  # The rate limiter applies only to the share served natively; traffic going
+  # to Synapse is already limited by Synapse.
   # /event applies history-visibility filtering, which the state endpoints do
   # not. It is the only place where a mistake serves private room history to a
   # server that should not see it, so it warrants the longest soak.

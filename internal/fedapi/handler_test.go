@@ -2,6 +2,7 @@ package fedapi
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -16,6 +17,8 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/daedric/synapse-gopro-worker/internal/config"
+	"github.com/daedric/synapse-gopro-worker/internal/fedauth"
+	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
 	"github.com/daedric/synapse-gopro-worker/internal/ratelimit"
 )
@@ -163,8 +166,9 @@ func rawGet(t *testing.T, addr, uri, auth string) (int, string) {
 // status alone.
 func TestRateLimitRejectsWithSynapseShape(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Hold the request open so the limiter's slots stay occupied.
-		time.Sleep(2 * time.Second)
+		// The proxy is no longer what holds the limiter's slots; a native
+		// answer is. Kept responsive so an unexpected fallback fails loudly
+		// rather than by timing out.
 		_, _ = w.Write([]byte("{}"))
 	}))
 	defer upstream.Close()
@@ -188,7 +192,11 @@ func TestRateLimitRejectsWithSynapseShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop()))
+	// The limiter bounds native work, so the slot has to be held by a native
+	// answer rather than by the proxy: a request that falls back to Synapse is
+	// deliberately not limited by us, since Synapse limits it itself.
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop(),
+		WithNative(&slowResolver{delay: 700 * time.Millisecond}, acceptingVerifier{}, 30*time.Second)))
 	defer front.Close()
 
 	const auth = `X-Matrix origin="noisy.example",destination="example.com",key="ed25519:a",sig="x"`
@@ -334,4 +342,30 @@ func TestNoRateLimitWhileProxying(t *testing.T) {
 			}
 		})
 	}
+}
+
+// acceptingVerifier stands in for real verification so the request path can be
+// exercised without signing keys. It must never be used to assert anything
+// about authentication itself.
+type acceptingVerifier struct{}
+
+func (acceptingVerifier) Verify(r *http.Request) fedauth.Result {
+	return fedauth.Result{Origin: originFromAuth(r.Header.Get("Authorization"))}
+}
+
+// slowResolver holds a native answer open, so the limiter's slots stay
+// occupied for as long as a real slow query would.
+type slowResolver struct{ delay time.Duration }
+
+func (s *slowResolver) StateIDs(ctx context.Context, origin, roomID, eventID string) (*matrixstate.StateIDsResponse, error) {
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return &matrixstate.StateIDsResponse{}, nil
+}
+
+func (s *slowResolver) Event(ctx context.Context, origin, serverName, eventID string) (*matrixstate.TransactionResponse, error) {
+	return nil, nil
 }

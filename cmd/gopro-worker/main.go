@@ -134,19 +134,32 @@ func run() error {
 			Msg("Resumed shadow comparison statistics")
 	}
 
+	// The resolver and verifier are built once and shared between the shadow
+	// comparator and the request path, so a canary answer and the answer we
+	// compared in shadow mode come from exactly the same objects -- including
+	// the same warm caches and the same key cache.
+	var (
+		resolver *matrixstate.Resolver
+		verifier *fedauth.Verifier
+	)
+	if db != nil && cfg.NeedsDatabase() {
+		resolver = matrixstate.NewResolver(db)
+		verifier = fedauth.New(cfg.ServerName, fedauth.Options{
+			KeyRefetchDelay: time.Duration(cfg.Auth.KeyRefetchMinutes) * time.Minute,
+			Timeout:         time.Duration(cfg.Auth.TimeoutSeconds) * time.Second,
+			Notaries:        cfg.Auth.TrustedKeyServers,
+			DB:              db,
+			Log:             log,
+		})
+	}
+
 	// Only built when a database is available and something is being compared.
 	var runner *shadow.Runner
 	if db != nil && cfg.NeedsDatabase() {
 		runner = shadow.NewRunner(
-			matrixstate.NewResolver(db),
+			resolver,
 			cfg.ServerName,
-			fedauth.New(cfg.ServerName, fedauth.Options{
-				KeyRefetchDelay: time.Duration(cfg.Auth.KeyRefetchMinutes) * time.Minute,
-				Timeout:         time.Duration(cfg.Auth.TimeoutSeconds) * time.Second,
-				Notaries:        cfg.Auth.TrustedKeyServers,
-				DB:              db,
-				Log:             log,
-			}),
+			verifier,
 			diffs,
 			log,
 			shadow.Options{
@@ -160,7 +173,14 @@ func run() error {
 			Msg("Shadow comparison enabled")
 	}
 
-	handler := fedapi.New(cfg, p, runner, log)
+	var handlerOpts []fedapi.Option
+	if resolver != nil && verifier != nil {
+		// Canary and native modes need both. Passing them unconditionally is
+		// harmless: without a mode that serves natively, nothing calls them.
+		handlerOpts = append(handlerOpts, fedapi.WithNative(
+			resolver, verifier, time.Duration(cfg.Shadow.TimeoutSeconds)*time.Second))
+	}
+	handler := fedapi.New(cfg, p, runner, log, handlerOpts...)
 
 	// Report which endpoints the limiter actually governs. It applies only
 	// where we answer, so saying "active" while everything is proxied or

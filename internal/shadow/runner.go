@@ -14,6 +14,7 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/difflog"
 	"github.com/daedric/synapse-gopro-worker/internal/fedauth"
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
+	"github.com/daedric/synapse-gopro-worker/internal/native"
 )
 
 // Request describes the federation request being shadowed.
@@ -65,10 +66,7 @@ func matrixErrorResponse(err error) ([]byte, int, error) {
 // The Runner depends on this narrow interface rather than the concrete
 // resolver so its scheduling behaviour — dropping work when busy, surviving
 // panics, never blocking a request — can be tested without a database.
-type StateIDsResolver interface {
-	StateIDs(ctx context.Context, origin, roomID, eventID string) (*matrixstate.StateIDsResponse, error)
-	Event(ctx context.Context, origin, serverName, eventID string) (*matrixstate.TransactionResponse, error)
-}
+type StateIDsResolver = native.Resolver
 
 // Runner computes native answers alongside proxied ones and records
 // disagreements.
@@ -357,36 +355,15 @@ func (r *Runner) logAuthMismatch(req Request, proxy ProxyResult, verifiedOrigin,
 	})
 }
 
+// compute produces our answer, using the same code the request path uses so
+// the two can never disagree about what "our answer" is.
 func (r *Runner) compute(ctx context.Context, req Request, origin string) ([]byte, int, error) {
-	switch req.Endpoint {
-	case "state_ids":
-		resp, err := r.resolver.StateIDs(ctx, origin, req.RoomID, req.EventID)
-		if err != nil {
-			return matrixErrorResponse(err)
-		}
-		body, err := json.Marshal(resp)
-		if err != nil {
-			return nil, 0, err
-		}
-		return body, 200, nil
-	case "event":
-		resp, err := r.resolver.Event(ctx, origin, r.serverName, req.EventID)
-		if errors.Is(err, matrixstate.ErrEventNotFound) {
-			// Synapse answers an unknown event with 404 and an empty body,
-			// not a JSON error.
-			return nil, 404, nil
-		}
-		if err != nil {
-			return matrixErrorResponse(err)
-		}
-		body, err := json.Marshal(resp)
-		if err != nil {
-			return nil, 0, err
-		}
-		return body, 200, nil
-	default:
-		return nil, 0, errors.New("shadow: no native implementation for " + req.Endpoint)
-	}
+	return native.Answer(ctx, r.resolver, r.serverName, native.Request{
+		Endpoint: req.Endpoint,
+		Origin:   origin,
+		RoomID:   req.RoomID,
+		EventID:  req.EventID,
+	})
 }
 
 func (r *Runner) diff(endpoint string, synapseBody, nativeBody []byte) (*difflog.Diff, error) {

@@ -10,7 +10,9 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/daedric/synapse-gopro-worker/internal/config"
+	"github.com/daedric/synapse-gopro-worker/internal/fedauth"
 	"github.com/daedric/synapse-gopro-worker/internal/metrics"
+	"github.com/daedric/synapse-gopro-worker/internal/native"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
 	"github.com/daedric/synapse-gopro-worker/internal/ratelimit"
 	"github.com/daedric/synapse-gopro-worker/internal/shadow"
@@ -28,6 +30,18 @@ type Handler struct {
 	limiter *ratelimit.Limiter
 	log     zerolog.Logger
 
+	// resolver and verifier are what make canary and native modes possible:
+	// an answer of our own, and proof of who asked for it. Both nil while
+	// every endpoint is proxying or shadowing, in which case serveNative
+	// declines and everything goes to Synapse.
+	resolver   native.Resolver
+	verifier   Verifier
+	serverName string
+	// nativeTimeout bounds a natively served answer. Exceeding it falls back
+	// to the proxy, so a pathological room costs latency rather than a
+	// hung request.
+	nativeTimeout time.Duration
+
 	// limitedOrigins tracks which servers have been rejected, so their count
 	// can be exported without exporting their names.
 	limitedMu      sync.Mutex
@@ -40,32 +54,55 @@ type Handler struct {
 }
 
 // New builds a Handler. runner may be nil, in which case nothing is shadowed.
-func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.Logger) *Handler {
+func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.Logger, opts ...Option) *Handler {
 	limit := int64(cfg.Shadow.CaptureMB) << 20
 	if limit <= 0 {
 		limit = 32 << 20
 	}
-	return &Handler{
-		cfg:          cfg,
-		proxy:        p,
-		shadow:       runner,
-		limiter:      ratelimit.New(cfg.RCFederation),
-		log:          log,
-		captureLimit: limit,
+	h := &Handler{
+		cfg:           cfg,
+		proxy:         p,
+		shadow:        runner,
+		limiter:       ratelimit.New(cfg.RCFederation),
+		log:           log,
+		captureLimit:  limit,
+		serverName:    cfg.ServerName,
+		nativeTimeout: 30 * time.Second,
+	}
+	for _, o := range opts {
+		o(h)
+	}
+	return h
+}
+
+// Verifier authenticates an incoming federation request.
+//
+// A narrow interface rather than the concrete type, so the request path can be
+// tested without signing keys -- and so the decision "what happens when
+// verification fails" can be exercised, which is the one that decides whether
+// a stranger can read room state.
+type Verifier interface {
+	Verify(r *http.Request) fedauth.Result
+}
+
+// Option configures a Handler.
+type Option func(*Handler)
+
+// WithNative supplies what canary and native modes need: our own answer, and
+// verification of who is asking. Without it those modes decline to serve and
+// every request goes to Synapse, which is the safe default.
+func WithNative(r native.Resolver, v Verifier, timeout time.Duration) Option {
+	return func(h *Handler) {
+		h.resolver = r
+		h.verifier = v
+		if timeout > 0 {
+			h.nativeTimeout = timeout
+		}
 	}
 }
 
 // Limiter exposes the rate limiter for metrics and maintenance.
 func (h *Handler) Limiter() *ratelimit.Limiter { return h.limiter }
-
-// acquire applies the rate limiter when the mode may serve natively, and is a
-// no-op otherwise.
-func (h *Handler) acquire(r *http.Request, mode config.Mode, origin string) (func(), ratelimit.Outcome, error) {
-	if !mode.ServesNatively() {
-		return func() {}, ratelimit.Outcome{}, nil
-	}
-	return h.limiter.Acquire(r.Context(), origin)
-}
 
 // noteLimited records that an origin was rejected and returns how many distinct
 // origins have been. It answers "one noisy server or many?" without needing a
@@ -100,61 +137,82 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	origin := originFromAuth(r.Header.Get("Authorization"))
 
-	// Rate limiting applies only to requests we answer ourselves.
+	endpointName := string(route.Endpoint)
+	roomID := roomIDFor(route)
+	eventID := eventIDFor(route, r)
+
+	// Canary and native modes answer some or all traffic themselves.
 	//
-	// While proxying or shadowing, Synapse answers every request and its own
-	// limiter already protects it. Adding ours in front would put every request
-	// through two limiters in series, delaying traffic Synapse would have
-	// served and inflating the very upstream latency we are trying to measure.
-	// The limiter exists to protect us once we are the ones doing the work, so
-	// that is when it is applied.
+	// The share is chosen by hashing the event ID rather than at random, so a
+	// retrying server keeps getting the same implementation. Anything that
+	// goes wrong inside -- verification, an error, a timeout, a panic -- falls
+	// through to the proxy with nothing written, so a canary can cost latency
+	// but not correctness.
+	serveNatively := sampled(mode, eventID)
+
+	// Rate limiting applies only to the share we answer ourselves.
 	//
-	// The origin is the one claimed in the X-Matrix header rather than a
-	// verified one: verification costs a network key fetch, and a limiter that
-	// had to do that first could itself be used to generate load. Synapse
-	// limits on the claimed origin for the same reason.
-	release, outcome, err := h.acquire(r, mode, origin)
-	if err != nil {
-		if errors.Is(err, ratelimit.ErrLimitExceeded) {
-			metrics.RateLimitedTotal.WithLabelValues(string(route.Endpoint)).Inc()
-			metrics.RequestsTotal.WithLabelValues(string(route.Endpoint), mode.Kind, "429").Inc()
-			metrics.RateLimitedOrigins.Set(float64(h.noteLimited(origin)))
-			// Logged at warn with the origin: metrics deliberately carry no
-			// per-origin label, so this is where "which server" is answered.
-			h.log.Warn().
-				Str("endpoint", string(route.Endpoint)).
-				Str("origin", origin).
-				Str("uri", r.URL.RequestURI()).
-				Int("reject_limit", h.limiter.Settings().RejectLimit).
-				Int("concurrent", h.limiter.Settings().Concurrent).
-				Msg("Rate limited: rejected request")
-			writeLimitExceeded(w, h.limiter.Settings())
+	// While a request is going to Synapse, its own limiter already protects
+	// it, and adding ours in front would put that traffic through two limiters
+	// in series -- delaying requests Synapse would have served and inflating
+	// the upstream latency we measure against.
+	//
+	// The origin is the one claimed in the X-Matrix header, not a verified
+	// one, and the limiter runs before verification on purpose: verifying can
+	// require a network key fetch, so a limiter that ran after it could be
+	// used to generate outbound load. Synapse limits on the claimed origin for
+	// the same reason.
+	if serveNatively {
+		release, outcome, err := h.limiter.Acquire(r.Context(), origin)
+		if err != nil {
+			if errors.Is(err, ratelimit.ErrLimitExceeded) {
+				metrics.RateLimitedTotal.WithLabelValues(endpointName).Inc()
+				metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "429").Inc()
+				metrics.RateLimitedOrigins.Set(float64(h.noteLimited(origin)))
+				// Logged at warn with the origin: metrics deliberately carry
+				// no per-origin label, so this is where "which server" is
+				// answered.
+				h.log.Warn().
+					Str("endpoint", endpointName).
+					Str("origin", origin).
+					Str("uri", r.URL.RequestURI()).
+					Int("reject_limit", h.limiter.Settings().RejectLimit).
+					Int("concurrent", h.limiter.Settings().Concurrent).
+					Msg("Rate limited: rejected request")
+				writeLimitExceeded(w, h.limiter.Settings())
+				return
+			}
+			// The client went away while queued; there is nobody left to answer.
+			metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "canceled").Inc()
 			return
 		}
-		// The client went away while queued; there is nobody left to answer.
-		metrics.RequestsTotal.WithLabelValues(string(route.Endpoint), mode.Kind, "canceled").Inc()
-		return
-	}
-	defer release()
-
-	if outcome.Slept || outcome.Queued {
-		if outcome.Slept {
-			metrics.RateLimitSleptTotal.WithLabelValues(string(route.Endpoint)).Inc()
+		if outcome.Slept || outcome.Queued {
+			if outcome.Slept {
+				metrics.RateLimitSleptTotal.WithLabelValues(endpointName).Inc()
+			}
+			h.log.Info().
+				Str("endpoint", endpointName).
+				Str("origin", origin).
+				Bool("slept", outcome.Slept).
+				Bool("queued", outcome.Queued).
+				Dur("wait_ms", outcome.Wait).
+				Msg("Rate limited: delayed request")
 		}
-		metrics.RateLimitQueueWait.WithLabelValues(string(route.Endpoint)).Observe(outcome.Wait.Seconds())
-		h.log.Info().
-			Str("endpoint", string(route.Endpoint)).
-			Str("origin", origin).
-			Bool("slept", outcome.Slept).
-			Bool("queued", outcome.Queued).
-			Dur("wait_ms", outcome.Wait).
-			Msg("Rate limited: delayed request")
+
+		served := h.serveNative(w, r, endpointName, roomID, eventID)
+		release()
+		if served {
+			metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "native").Inc()
+			return
+		}
+		nativeFallbackServed.WithLabelValues(endpointName).Inc()
 	}
 
-	// Shadow mode still serves Synapse's answer; it only needs the body kept
-	// so the comparison has something to check against.
+	// Shadowing continues through canary, on the share still going to Synapse.
+	// Promoting an endpoint is exactly when disagreements matter most, so it
+	// would be the wrong moment to stop looking for them.
 	var capture int64
-	shadowing := mode.Kind == config.ModeShadow && h.shadow != nil
+	shadowing := (mode.Kind == config.ModeShadow || mode.Kind == config.ModeCanary) && h.shadow != nil
 	if shadowing {
 		capture = h.captureLimit
 	}

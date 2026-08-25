@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/native"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
 	"github.com/daedric/synapse-gopro-worker/internal/ratelimit"
+	"github.com/daedric/synapse-gopro-worker/internal/shadow"
 )
 
 func TestSamplingIsDeterministic(t *testing.T) {
@@ -278,5 +280,61 @@ func TestNativeServingDoesNotDeadlockOnTheLimiter(t *testing.T) {
 		case <-time.After(8 * time.Second):
 			t.Fatalf("only %d of %d requests completed; the limiter slot is not being released", i, n)
 		}
+	}
+}
+
+// A canary must verify the answers it actually served, not only the share it
+// proxied. Without this the promotion gate watches exactly the requests that
+// never reached a remote server.
+func TestCanaryComparesWhatItServed(t *testing.T) {
+	var upstreamHits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"pdu_ids":["$a"],"auth_chain_ids":[]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeCanary, CanaryPercent: 100},
+		},
+		Shadow: config.Shadow{Concurrency: 4, CaptureMB: 1},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimSpace(strings.TrimPrefix(upstream.URL, "http://"))}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A runner with the same answer as the resolver: agreement, not a mismatch.
+	res := &fakeResolver{resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}}}
+	runner := shadow.NewRunner(res, "example.com", nil, nil, zerolog.Nop(),
+		shadow.Options{Concurrency: 4, Timeout: 5 * time.Second})
+
+	front := httptest.NewServer(New(cfg, p, runner, zerolog.Nop(),
+		WithNative(res, acceptingVerifier{}, 5*time.Second)))
+	defer front.Close()
+
+	status, body := rawGet(t, front.Listener.Addr().String(),
+		"/_matrix/federation/v1/state_ids/%21r%3Aexample.com?event_id=%24evt",
+		`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`)
+
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 served natively", status)
+	}
+	if !strings.Contains(body, `"$a"`) {
+		t.Errorf("body = %q, want our own answer", body)
+	}
+
+	// The comparison runs after the response, so give it a moment. The point
+	// is that Synapse is consulted at all: before this change the upstream was
+	// never contacted for a natively served request.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt32(&upstreamHits) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&upstreamHits); got == 0 {
+		t.Error("the served answer was never compared against Synapse")
 	}
 }

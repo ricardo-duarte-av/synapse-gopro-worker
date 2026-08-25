@@ -1720,11 +1720,351 @@
     },
     {
       "type": "row",
-      "title": "Rate limiting",
+      "title": "Canary (answers we served)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
         "y": 56,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Served natively",
+      "description": "Answers produced by us and sent to a remote server. In shadow mode this is zero: nothing we compute is served.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 57,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gopro_native_served_total{job=~\"$job\"}[$bucket]))",
+          "legendFormat": "Served natively",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Verified share",
+      "description": "Fraction of served answers that were afterwards checked against Synapse. This is the number a promotion decision rests on: a canary that serves but does not verify is worse than shadow mode, because the answers nobody checked are the ones that left the building.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 57,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.9
+              },
+              {
+                "color": "green",
+                "value": 0.99
+              }
+            ]
+          },
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gopro_canary_compared_total{job=~\"$job\"}[$bucket])) / clamp_min(sum(increase(gopro_native_served_total{job=~\"$job\"}[$bucket])), 1)",
+          "legendFormat": "Verified share",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Fell back to Synapse",
+      "description": "Requests sampled for the canary that were proxied instead. A canary where everything falls back is shadow mode wearing a different label.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 57,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gopro_native_fallback_served_total{job=~\"$job\"}[$bucket]))",
+          "legendFormat": "Fell back to Synapse",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Fallback reasons",
+      "description": "Why a sampled request was not answered by us: auth_rejected, error, timeout, panic, rate_limited. Anything other than auth_rejected points at our own code.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 57,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason) (increase(gopro_native_fallback_total{job=~\"$job\"}[$bucket]))",
+          "legendFormat": "{{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Native answer latency",
+      "description": "Time to produce an answer that was actually served. Unlike the shadow histogram this describes what remote servers experienced.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 61,
+        "w": 12,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(gopro_native_duration_seconds_bucket{job=~\"$job\"}[$bucket])))",
+          "legendFormat": "p50",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(gopro_native_duration_seconds_bucket{job=~\"$job\"}[$bucket])))",
+          "legendFormat": "p90",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_native_duration_seconds_bucket{job=~\"$job\"}[$bucket])))",
+          "legendFormat": "p99",
+          "range": true,
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Rate limiting",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 65,
         "w": 24,
         "h": 1
       },
@@ -1740,7 +2080,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 57,
+        "y": 66,
         "w": 4,
         "h": 4
       },
@@ -1810,7 +2150,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 57,
+        "y": 66,
         "w": 4,
         "h": 4
       },
@@ -1872,7 +2212,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 57,
+        "y": 66,
         "w": 4,
         "h": 4
       },
@@ -1933,7 +2273,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 57,
+        "y": 66,
         "w": 4,
         "h": 4
       },
@@ -1994,7 +2334,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 57,
+        "y": 66,
         "w": 4,
         "h": 4
       },
@@ -2056,7 +2396,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 57,
+        "y": 66,
         "w": 4,
         "h": 4
       },
@@ -2126,7 +2466,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 61,
+        "y": 70,
         "w": 12,
         "h": 8
       },
@@ -2200,7 +2540,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 61,
+        "y": 70,
         "w": 12,
         "h": 8
       },
@@ -2270,7 +2610,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 70,
+        "y": 79,
         "w": 24,
         "h": 1
       },
@@ -2286,7 +2626,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 71,
+        "y": 80,
         "w": 5,
         "h": 4
       },
@@ -2356,7 +2696,7 @@
       },
       "gridPos": {
         "x": 5,
-        "y": 71,
+        "y": 80,
         "w": 5,
         "h": 4
       },
@@ -2418,7 +2758,7 @@
       },
       "gridPos": {
         "x": 10,
-        "y": 71,
+        "y": 80,
         "w": 5,
         "h": 4
       },
@@ -2479,7 +2819,7 @@
       },
       "gridPos": {
         "x": 15,
-        "y": 71,
+        "y": 80,
         "w": 5,
         "h": 4
       },
@@ -2545,7 +2885,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 71,
+        "y": 80,
         "w": 4,
         "h": 4
       },
@@ -2606,7 +2946,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 75,
+        "y": 84,
         "w": 12,
         "h": 8
       },
@@ -2671,7 +3011,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 75,
+        "y": 84,
         "w": 12,
         "h": 8
       },
@@ -2745,7 +3085,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 83,
+        "y": 92,
         "w": 12,
         "h": 7
       },
@@ -2819,7 +3159,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 83,
+        "y": 92,
         "w": 12,
         "h": 7
       },
@@ -2882,7 +3222,7 @@
       "description": "Share of /event's filtered state-group lookups answered from cache rather than a recursive walk of state_groups_state. 'filtered_cache' is the per-(group,filter) cache; 'state_cache' means the whole map happened to be resident.",
       "gridPos": {
         "x": 0,
-        "y": 91,
+        "y": 100,
         "w": 6,
         "h": 4
       },
@@ -2954,7 +3294,7 @@
       "description": "Filtered state-group resolutions by query kind and source. 'database' means a recursive CTE over state_groups_state; 'cache' means the whole map was already resolved.",
       "gridPos": {
         "x": 6,
-        "y": 91,
+        "y": 100,
         "w": 18,
         "h": 4
       },
@@ -3004,7 +3344,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 95,
+        "y": 104,
         "w": 24,
         "h": 1
       },
@@ -3020,7 +3360,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 96,
+        "y": 105,
         "w": 4,
         "h": 4
       },
@@ -3102,7 +3442,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 96,
+        "y": 105,
         "w": 4,
         "h": 4
       },
@@ -3164,7 +3504,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 96,
+        "y": 105,
         "w": 4,
         "h": 4
       },
@@ -3230,7 +3570,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 96,
+        "y": 105,
         "w": 12,
         "h": 8
       },
@@ -3284,7 +3624,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 100,
+        "y": 109,
         "w": 12,
         "h": 4
       },
@@ -3334,7 +3674,7 @@
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 104,
+        "y": 113,
         "w": 24,
         "h": 1
       },

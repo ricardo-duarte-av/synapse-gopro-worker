@@ -72,3 +72,13 @@ var (
 		Buckets:   latencyBuckets,
 	}, []string{"endpoint"})
 )
+
+// canaryCompared counts answers we served natively that were afterwards
+// checked against Synapse. Comparing it with gopro_native_served_total says
+// what fraction of served answers were actually verified -- the number a
+// promotion decision should rest on.
+var canaryCompared = promauto.NewCounterVec(prometheus.CounterOpts{
+	Namespace: "gopro",
+	Name:      "canary_compared_total",
+	Help:      "Natively served answers that were compared against Synapse afterwards.",
+}, []string{"endpoint"})

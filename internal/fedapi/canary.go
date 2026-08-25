@@ -9,6 +9,7 @@ import (
 
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/native"
+	"github.com/daedric/synapse-gopro-worker/internal/shadow"
 )
 
 // sampled decides whether this request is one of the canary's share.
@@ -104,7 +105,57 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, endpoint, 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+
+	// The client has its answer; now find out whether it was right.
+	//
+	// A canary that only compares the share it did not serve verifies exactly
+	// the wrong requests. This checks the ones that actually reached a remote
+	// server, at the cost of one extra upstream request and no latency.
+	h.compareServed(r, endpoint, roomID, eventID, body, status, elapsed)
 	return true
+}
+
+// compareServed asks Synapse what it would have answered, and records any
+// disagreement the same way shadow mode does.
+//
+// The request is cloned onto a detached context: the original is cancelled the
+// moment the handler returns, and this deliberately runs after that.
+func (h *Handler) compareServed(r *http.Request, endpoint, roomID, eventID string, body []byte, status int, elapsed time.Duration) {
+	if h.shadow == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.nativeTimeout)
+	replay := r.Clone(ctx)
+	replay.Body = http.NoBody
+
+	go func() {
+		defer cancel()
+		defer func() {
+			if p := recover(); p != nil {
+				h.log.Error().Interface("panic", p).Str("endpoint", endpoint).
+					Msg("Canary comparison panicked")
+			}
+		}()
+		res := h.proxy.Fetch(replay, h.captureLimit)
+		h.shadow.CompareServed(
+			shadow.Request{
+				Endpoint:   endpoint,
+				Origin:     originFromAuth(r.Header.Get("Authorization")),
+				RoomID:     roomID,
+				EventID:    eventID,
+				URI:        r.URL.RequestURI(),
+				Method:     r.Method,
+				AuthHeader: r.Header.Get("Authorization"),
+			},
+			shadow.ProxyResult{
+				Status:    res.Status,
+				Body:      res.Body,
+				Duration:  res.Duration,
+				Truncated: res.Truncated,
+			},
+			elapsed, body, status,
+		)
+	}()
 }
 
 // answer computes the response, converting a panic into an error so a bug in

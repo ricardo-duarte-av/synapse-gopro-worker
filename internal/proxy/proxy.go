@@ -258,3 +258,27 @@ func (r *recorder) Flush() {
 		f.Flush()
 	}
 }
+
+// Fetch performs the upstream request and returns the answer without sending
+// it to a client.
+//
+// It exists for the canary: once we have answered a request ourselves, this is
+// how we ask Synapse what it would have said, so the answer we actually served
+// can be compared. The request must carry a context that outlives the original
+// one, which the caller detaches -- by the time this runs the client has its
+// answer and the original context is cancelled.
+func (p *Proxy) Fetch(r *http.Request, captureLimit int64) Result {
+	if captureLimit <= 0 {
+		captureLimit = 1
+	}
+	return p.Forward(discardWriter{header: make(http.Header)}, r, captureLimit)
+}
+
+// discardWriter satisfies http.ResponseWriter without sending anything. The
+// recorder wrapped around it still observes the status and buffers the body,
+// which is all Fetch needs.
+type discardWriter struct{ header http.Header }
+
+func (d discardWriter) Header() http.Header         { return d.header }
+func (d discardWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (d discardWriter) WriteHeader(int)             {}

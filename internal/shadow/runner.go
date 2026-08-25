@@ -477,3 +477,47 @@ func (r *Runner) upstreamKeyFetchFailed(req Request, proxy ProxyResult, nativeSt
 		Str("synapse_error", string(proxy.Body)).
 		Msg("Synapse could not fetch the origin's keys; we verified it. Not counted as a mismatch")
 }
+
+// CompareServed checks an answer we already served against Synapse's.
+//
+// This is the canary's safety net, and it inverts the shadow arrangement: in
+// shadow mode the proxy answers and we compute a second opinion nobody sees,
+// while here *we* answered and Synapse's opinion is the one fetched afterwards.
+//
+// That inversion is the point. Without it a canary verifies only the share it
+// did not serve, so the requests being checked are exactly the ones that never
+// reached a remote server — the reverse of what a promotion gate should watch.
+//
+// It runs after the client has its answer, so it costs an extra upstream
+// request but no latency, and a disagreement is recorded exactly as a shadow
+// mismatch is. Dropped rather than queued when busy: falling behind must never
+// slow down serving.
+func (r *Runner) CompareServed(req Request, proxy ProxyResult, elapsed time.Duration, nativeBody []byte, nativeStatus int) {
+	if r == nil {
+		return
+	}
+	select {
+	case r.sem <- struct{}{}:
+	default:
+		shadowSkipped.WithLabelValues(req.Endpoint, "busy").Inc()
+		return
+	}
+	defer func() { <-r.sem }()
+	defer func() {
+		if p := recover(); p != nil {
+			shadowSkipped.WithLabelValues(req.Endpoint, "panic").Inc()
+			r.log.Error().Interface("panic", p).
+				Str("endpoint", req.Endpoint).Str("uri", req.URI).
+				Msg("Canary comparison panicked")
+		}
+	}()
+
+	if proxy.Status == 0 || proxy.Status == http.StatusBadGateway {
+		// Synapse gave us nothing to compare against; that is a failure to
+		// verify, not a disagreement, and must not be counted as a match.
+		shadowSkipped.WithLabelValues(req.Endpoint, "upstream_unavailable").Inc()
+		return
+	}
+	canaryCompared.WithLabelValues(req.Endpoint).Inc()
+	r.finish(req, proxy, elapsed, nativeBody, nativeStatus)
+}

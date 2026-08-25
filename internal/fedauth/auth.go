@@ -12,9 +12,12 @@
 package fedauth
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/exhttp"
 	"maunium.net/go/mautrix"
@@ -130,8 +133,60 @@ func (v *Verifier) Verify(r *http.Request) Result {
 	if respErr != nil {
 		return Result{Err: respErr}
 	}
+	if respErr := v.requireCurrentlyValidKey(r.Header.Get("Authorization")); respErr != nil {
+		return Result{Err: respErr}
+	}
 	return Result{Origin: federation.OriginServerNameFromRequest(modified)}
+}
+
+// requireCurrentlyValidKey rejects a request signed with a key that is past its
+// own valid_until_ts.
+//
+// Synapse calls verify_json_for_server(origin, request, now), so the key must be
+// valid at the moment of the request. mautrix checks valid_until_ts when
+// *loading* keys from its cache, but GetKeysWithCache returns a freshly fetched
+// response without that check — so a server publishing an already-expired key
+// is accepted on the first request and rejected only afterwards.
+//
+// That is not hypothetical: ryuu.eu publishes ed25519:a_EMUw with a
+// valid_until_ts of 2025-12-23. Synapse answered 401 after 32 s of trying to
+// find a usable key; we accepted the request in under a millisecond. Accepting
+// a signature from a key the origin itself declares expired defeats the point
+// of key rotation — if a key was rotated because it leaked, the expiry is
+// exactly what stops the old one being used.
+//
+// The check is a cache lookup, not a second verification: both layers of the
+// key cache already refuse anything past its validity, so a key that cannot be
+// loaded back is a key that was not valid to use.
+func (v *Verifier) requireCurrentlyValidKey(authHeader string) *mautrix.RespError {
+	parsed := federation.ParseXMatrixAuth(authHeader)
+	if parsed.Origin == "" || parsed.KeyID == "" {
+		// Authenticate would already have rejected this; nothing to add.
+		return nil
+	}
+
+	res, err := v.auth.Keys.LoadKeys(parsed.Origin)
+	if err == nil && res != nil && res.HasKey(parsed.KeyID) &&
+		time.Until(res.ValidUntilTS.Time) > 0 {
+		return nil
+	}
+
+	authVerdictExpiredKey.Inc()
+	return &mautrix.RespError{
+		ErrCode: "M_UNAUTHORIZED",
+		Err: fmt.Sprintf("No currently valid key to satisfy %s for %s: the published key is past its valid_until_ts",
+			parsed.KeyID, parsed.Origin),
+		StatusCode: http.StatusUnauthorized,
+	}
 }
 
 // ServerName returns the homeserver this verifier accepts requests for.
 func (v *Verifier) ServerName() string { return v.serverName }
+
+// authVerdictExpiredKey counts requests rejected for being signed with a key
+// past its valid_until_ts. Synapse rejects these too; a non-zero rate here
+// means remote servers with broken key servers, not a fault in this worker.
+var authVerdictExpiredKey = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "gopro_auth_expired_key_total",
+	Help: "Requests rejected because the origin's published key was past its valid_until_ts.",
+})

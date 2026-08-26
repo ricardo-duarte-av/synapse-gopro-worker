@@ -53,7 +53,7 @@ func sampled(mode config.Mode, key string) bool {
 // whole safety property of a canary: any doubt costs latency, never
 // correctness. Nothing is written until a complete answer exists, so a failure
 // halfway through cannot leave a half-written response.
-func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, endpoint, roomID, eventID string) (served bool, reason string, spent time.Duration) {
+func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode config.Mode, endpoint, roomID, eventID string) (served bool, reason string, spent time.Duration) {
 	if h.resolver == nil {
 		return false, "no_resolver", 0
 	}
@@ -121,12 +121,27 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, endpoint, 
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
 
-	// The client has its answer; now find out whether it was right.
+	// A canary verifies what it served; native does not.
 	//
-	// A canary that only compares the share it did not serve verifies exactly
-	// the wrong requests. This checks the ones that actually reached a remote
-	// server, at the cost of one extra upstream request and no latency.
-	h.compareServed(r, endpoint, roomID, eventID, body, status, elapsed)
+	// While an endpoint is proving itself, every served answer is replayed to
+	// Synapse afterwards and compared -- a canary that only checked the share
+	// it did not serve would verify exactly the wrong requests.
+	//
+	// Native is the end of that process. Verifying there would mean Synapse
+	// still resolving every state group and running every recursive
+	// state_groups_state walk, so its database load would be unchanged no
+	// matter how much traffic we answered -- and that load is the whole point
+	// of the project, not the latency. Promotion is the decision to stop
+	// paying for a second opinion; an endpoint that still needs one is a
+	// canary, whatever the config calls it.
+	//
+	// Note this is what makes native the first mode in which Synapse can fall
+	// behind us unnoticed: nothing downstream of here compares anything. The
+	// evidence has to be gathered before promotion, because afterwards it
+	// stops arriving.
+	if mode.Kind == config.ModeCanary {
+		h.compareServed(r, endpoint, roomID, eventID, body, status, elapsed)
+	}
 	return true, "", time.Since(attemptStart)
 }
 

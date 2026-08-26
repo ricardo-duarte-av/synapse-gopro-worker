@@ -89,7 +89,8 @@ endpoints:
   #               answer and compare (Phase 2)
   # canary:N    - serve our own answer for N% of requests, falling back to
   #               Synapse for the rest and for anything that goes wrong
-  # native      - serve our own answer, falling back to the proxy on error
+  # native      - serve our own answer, falling back to the proxy on error,
+  #               and STOP verifying against Synapse
   #
   # Which requests a canary serves is decided by hashing the event ID, not at
   # random, so a retrying server keeps getting the same implementation. An
@@ -103,6 +104,19 @@ endpoints:
   #
   # Shadow comparison continues through canary on the share still going to
   # Synapse, so promoting an endpoint does not stop looking for disagreements.
+  #
+  # Native is where that stops, and it is the only irreversible-feeling step.
+  # In canary every answer we serve is replayed to Synapse afterwards and
+  # compared, which means Synapse still resolves every state group and runs
+  # every recursive state_groups_state walk -- so its database load is
+  # unchanged at canary:1 and at canary:100 alike. Removing that load is the
+  # point of the project (measured here: 13,530s of state_ids database time in
+  # 24h), and native is the mode that finally does it.
+  #
+  # The consequence to understand before setting it: native is the first mode
+  # in which a disagreement would go unnoticed. Nothing compares anything, so
+  # the evidence has to be gathered *before* promotion, because afterwards it
+  # stops arriving. Drop back to canary:N to start checking again.
   #
   # The rate limiter applies only to the share served natively; traffic going
   # to Synapse is already limited by Synapse.

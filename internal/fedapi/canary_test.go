@@ -541,3 +541,91 @@ func labelledCounter(t *testing.T, name, label, value string) float64 {
 	}
 	return total
 }
+
+// Native must not replay what it served to Synapse.
+//
+// Verification is what a canary is for. Keeping it in native mode would leave
+// Synapse resolving every state group and running every recursive
+// state_groups_state walk regardless of how much traffic we answered, so its
+// database load -- the cost this project exists to remove -- would never fall.
+//
+// The test runs canary and native through the same harness on purpose. A test
+// that only asserted "native did not contact the upstream" would pass just as
+// well if the harness could never observe a hit at all, which is how three
+// earlier tests in this package passed while broken. The canary case is the
+// control that proves the observation works; the native case is the claim.
+//
+// The shadow runner is deliberately non-nil in both, so the mode check is the
+// only thing that can suppress the replay.
+func TestNativeDoesNotVerifyButCanaryDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mode       config.Mode
+		wantVerify bool
+	}{
+		{"canary", config.Mode{Kind: config.ModeCanary, CanaryPercent: 100}, true},
+		{"native", config.Mode{Kind: config.ModeNative}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var upstreamHits int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&upstreamHits, 1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"pdu_ids":["$a"],"auth_chain_ids":[]}`))
+			}))
+			defer upstream.Close()
+
+			cfg := &config.Config{
+				ServerName: "example.com",
+				Endpoints: config.Endpoints{
+					Event: config.Mode{Kind: config.ModeProxy},
+					State: config.Mode{Kind: config.ModeProxy},
+					// The endpoint under test.
+					StateIDs: tc.mode,
+				},
+				Shadow: config.Shadow{Concurrency: 4, CaptureMB: 1},
+			}
+			p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := &fakeResolver{resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}}}
+			runner := shadow.NewRunner(res, "example.com", nil, nil, zerolog.Nop(),
+				shadow.Options{Concurrency: 4, Timeout: 5 * time.Second})
+
+			front := httptest.NewServer(New(cfg, p, runner, zerolog.Nop(),
+				WithNative(res, acceptingVerifier{}, 5*time.Second, 30*time.Second)))
+			defer front.Close()
+
+			status, body := rawGet(t, front.Listener.Addr().String(),
+				"/_matrix/federation/v1/state_ids/%21r%3Aexample.com?event_id=%24evt",
+				`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`)
+
+			// Both modes must have answered from our own implementation. Without
+			// this the native case would also pass on a fallback, which contacts
+			// the upstream for a completely different reason.
+			if status != http.StatusOK || !strings.Contains(body, `"$a"`) {
+				t.Fatalf("status = %d, body = %q; want our own answer served natively", status, body)
+			}
+
+			if tc.wantVerify {
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) && atomic.LoadInt32(&upstreamHits) == 0 {
+					time.Sleep(20 * time.Millisecond)
+				}
+				if atomic.LoadInt32(&upstreamHits) == 0 {
+					t.Error("canary served an answer without verifying it against Synapse")
+				}
+				return
+			}
+
+			// Absence needs a settling window: the replay is asynchronous, so
+			// checking immediately would pass even if it were still queued.
+			time.Sleep(500 * time.Millisecond)
+			if got := atomic.LoadInt32(&upstreamHits); got != 0 {
+				t.Errorf("native contacted the upstream %d time(s); promotion means "+
+					"Synapse stops doing the work, so a served answer must not be replayed", got)
+			}
+		})
+	}
+}

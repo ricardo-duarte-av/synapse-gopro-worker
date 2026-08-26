@@ -222,7 +222,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Msg("Rate limited: delayed request")
 		}
 
-		served, reason, spent := h.serveNative(w, r, endpointName, roomID, eventID)
+		served, reason, spent := h.serveNative(w, r, mode, endpointName, roomID, eventID)
 		release()
 		if served {
 			metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "native").Inc()

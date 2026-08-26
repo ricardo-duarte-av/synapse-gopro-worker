@@ -125,7 +125,7 @@ func (h *Handler) compareServed(r *http.Request, endpoint, roomID, eventID strin
 	if h.shadow == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.nativeTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.verifyTimeout)
 	replay := r.Clone(ctx)
 	replay.Body = http.NoBody
 

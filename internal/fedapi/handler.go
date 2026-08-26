@@ -42,6 +42,16 @@ type Handler struct {
 	// request -- but the whole budget is spent *before* the proxy is asked, so
 	// the client pays this plus Synapse's own time. It must stay short.
 	nativeTimeout time.Duration
+	// verifyTimeout bounds the after-the-fact fetch that checks a served
+	// answer against Synapse.
+	//
+	// Deliberately *not* nativeTimeout, and much longer. Nobody is waiting on
+	// this -- it runs after the response -- so it must outlive Synapse's worst
+	// case rather than our own. Sharing the serving budget meant every answer
+	// Synapse took longer than that to produce was abandoned and counted
+	// unverified, which silently skipped exactly the slow, large-room requests
+	// most likely to disagree.
+	verifyTimeout time.Duration
 
 	// limitedOrigins tracks which servers have been rejected, so their count
 	// can be exported without exporting their names.
@@ -69,6 +79,7 @@ func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.
 		captureLimit:  limit,
 		serverName:    cfg.ServerName,
 		nativeTimeout: 5 * time.Second,
+		verifyTimeout: 30 * time.Second,
 	}
 	for _, o := range opts {
 		o(h)
@@ -92,12 +103,15 @@ type Option func(*Handler)
 // WithNative supplies what canary and native modes need: our own answer, and
 // verification of who is asking. Without it those modes decline to serve and
 // every request goes to Synapse, which is the safe default.
-func WithNative(r native.Resolver, v Verifier, timeout time.Duration) Option {
+func WithNative(r native.Resolver, v Verifier, timeout, verifyTimeout time.Duration) Option {
 	return func(h *Handler) {
 		h.resolver = r
 		h.verifier = v
 		if timeout > 0 {
 			h.nativeTimeout = timeout
+		}
+		if verifyTimeout > 0 {
+			h.verifyTimeout = verifyTimeout
 		}
 	}
 }

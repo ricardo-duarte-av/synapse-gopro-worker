@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 
 	"github.com/daedric/synapse-gopro-worker/internal/config"
@@ -131,7 +132,7 @@ func canaryFrontend(t *testing.T, upstreamAddr string, res native.Resolver) stri
 	// A verifier with no trusted keys rejects everything, which is what makes
 	// the auth-rejection fallback observable.
 	h := New(cfg, p, nil, zerolog.Nop(),
-		WithNative(res, fedauth.New("example.com", fedauth.Options{}), 5*time.Second))
+		WithNative(res, fedauth.New("example.com", fedauth.Options{}), 5*time.Second, 30*time.Second))
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv.Listener.Addr().String()
@@ -258,7 +259,7 @@ func TestNativeServingDoesNotDeadlockOnTheLimiter(t *testing.T) {
 		t.Fatal(err)
 	}
 	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop(),
-		WithNative(&fakeResolver{resp: &matrixstate.StateIDsResponse{}}, acceptingVerifier{}, 5*time.Second)))
+		WithNative(&fakeResolver{resp: &matrixstate.StateIDsResponse{}}, acceptingVerifier{}, 5*time.Second, 30*time.Second)))
 	defer front.Close()
 
 	const n = 8
@@ -313,7 +314,7 @@ func TestCanaryComparesWhatItServed(t *testing.T) {
 		shadow.Options{Concurrency: 4, Timeout: 5 * time.Second})
 
 	front := httptest.NewServer(New(cfg, p, runner, zerolog.Nop(),
-		WithNative(res, acceptingVerifier{}, 5*time.Second)))
+		WithNative(res, acceptingVerifier{}, 5*time.Second, 30*time.Second)))
 	defer front.Close()
 
 	status, body := rawGet(t, front.Listener.Addr().String(),
@@ -363,7 +364,7 @@ func TestFallbackIsAccountedForEndToEnd(t *testing.T) {
 	// A resolver slower than the native budget, so the request times out and
 	// falls back -- the expensive case.
 	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop(),
-		WithNative(&slowResolver{delay: 2 * time.Second}, acceptingVerifier{}, 150*time.Millisecond)))
+		WithNative(&slowResolver{delay: 2 * time.Second}, acceptingVerifier{}, 150*time.Millisecond, 30*time.Second)))
 	defer front.Close()
 
 	start := time.Now()
@@ -384,4 +385,80 @@ func TestFallbackIsAccountedForEndToEnd(t *testing.T) {
 		t.Errorf("client waited %s; the native budget was 150ms, so a fallback "+
 			"should not cost the resolver's full 2s", elapsed)
 	}
+}
+
+// The verification fetch must outlive Synapse's worst case, not our serving
+// budget. Sharing one timeout meant every answer Synapse was slow to produce
+// went unverified -- silently skipping the large, cold-cache requests most
+// likely to disagree, while the match rate stayed clean.
+//
+// The oracle is gopro_canary_compared_total, not whether the upstream handler
+// ran: the handler runs either way, and asserting on it passes even when our
+// fetch has already given up.
+func TestVerificationOutlivesTheServingBudget(t *testing.T) {
+	before := counterValue(t, "gopro_canary_compared_total")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"pdu_ids":["$a"],"auth_chain_ids":[]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeCanary, CanaryPercent: 100},
+		},
+		Shadow: config.Shadow{Concurrency: 4, CaptureMB: 1},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &fakeResolver{resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}}}
+	runner := shadow.NewRunner(res, "example.com", nil, nil, zerolog.Nop(),
+		shadow.Options{Concurrency: 4, Timeout: 5 * time.Second})
+
+	// Serving budget 100ms, verification budget 5s. Synapse takes 400ms: too
+	// slow to serve behind, easily fast enough to verify against.
+	front := httptest.NewServer(New(cfg, p, runner, zerolog.Nop(),
+		WithNative(res, acceptingVerifier{}, 100*time.Millisecond, 5*time.Second)))
+	defer front.Close()
+
+	if status, _ := rawGet(t, front.Listener.Addr().String(),
+		"/_matrix/federation/v1/state_ids/%21r%3Aexample.com?event_id=%24evt",
+		`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`); status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) && counterValue(t, "gopro_canary_compared_total") <= before {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := counterValue(t, "gopro_canary_compared_total"); got <= before {
+		t.Errorf("canary_compared_total stayed at %v: verification gave up on an "+
+			"upstream slower than the serving budget, so the answer we served was never checked", before)
+	}
+}
+
+// counterValue reads a counter out of the default registry by name, summed
+// across labels.
+func counterValue(t *testing.T, name string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total float64
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			total += m.GetCounter().GetValue()
+		}
+	}
+	return total
 }

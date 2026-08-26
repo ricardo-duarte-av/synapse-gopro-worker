@@ -196,7 +196,7 @@ func TestRateLimitRejectsWithSynapseShape(t *testing.T) {
 	// answer rather than by the proxy: a request that falls back to Synapse is
 	// deliberately not limited by us, since Synapse limits it itself.
 	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop(),
-		WithNative(&slowResolver{delay: 700 * time.Millisecond}, acceptingVerifier{}, 30*time.Second)))
+		WithNative(&slowResolver{delay: 700 * time.Millisecond}, acceptingVerifier{}, 30*time.Second, 30*time.Second)))
 	defer front.Close()
 
 	const auth = `X-Matrix origin="noisy.example",destination="example.com",key="ed25519:a",sig="x"`

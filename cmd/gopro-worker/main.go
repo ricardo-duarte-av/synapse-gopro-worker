@@ -181,7 +181,13 @@ func run() error {
 		if nativeTimeout <= 0 {
 			nativeTimeout = 5 * time.Second
 		}
-		handlerOpts = append(handlerOpts, fedapi.WithNative(resolver, verifier, nativeTimeout))
+		// The verification fetch runs after the response with nobody waiting,
+		// so it gets shadow's generous budget rather than the serving one.
+		verifyTimeout := time.Duration(cfg.Shadow.TimeoutSeconds) * time.Second
+		if verifyTimeout <= 0 {
+			verifyTimeout = 30 * time.Second
+		}
+		handlerOpts = append(handlerOpts, fedapi.WithNative(resolver, verifier, nativeTimeout, verifyTimeout))
 	}
 	handler := fedapi.New(cfg, p, runner, log, handlerOpts...)
 

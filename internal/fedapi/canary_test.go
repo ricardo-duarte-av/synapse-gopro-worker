@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -458,6 +459,84 @@ func counterValue(t *testing.T, name string) float64 {
 		}
 		for _, m := range f.GetMetric() {
 			total += m.GetCounter().GetValue()
+		}
+	}
+	return total
+}
+
+// End to end: a client that disconnects mid-request must be recorded as
+// client_gone, never as a timeout.
+func TestClientHangupIsNotReportedAsTimeout(t *testing.T) {
+	beforeGone := labelledCounter(t, "gopro_native_fallback_total", "reason", "client_gone")
+	beforeTimeout := labelledCounter(t, "gopro_native_fallback_total", "reason", "timeout")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeCanary, CanaryPercent: 100},
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Resolver slower than the client's patience but well inside the budget,
+	// so only a disconnect can end it.
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop(),
+		WithNative(&slowResolver{delay: 3 * time.Second}, acceptingVerifier{}, 30*time.Second, 30*time.Second)))
+	defer front.Close()
+
+	// Connect, send, then hang up before the answer can arrive.
+	conn, err := net.DialTimeout("tcp", front.Listener.Addr().String(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(conn, "GET /_matrix/federation/v1/state_ids/%21r%3Aex?event_id=%24e HTTP/1.1\r\n"+
+		"Host: example.com\r\n"+
+		`Authorization: X-Matrix origin="n.example",destination="example.com",key="ed25519:a",sig="x"`+"\r\n"+
+		"Connection: close\r\n\r\n")
+	time.Sleep(200 * time.Millisecond)
+	conn.Close()
+
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) &&
+		labelledCounter(t, "gopro_native_fallback_total", "reason", "client_gone") <= beforeGone {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// The positive assertion is the one that matters: asserting only that
+	// "timeout" stayed at zero would pass even if nothing recorded anything.
+	if got := labelledCounter(t, "gopro_native_fallback_total", "reason", "client_gone"); got <= beforeGone {
+		t.Fatalf("client_gone stayed at %v: a client hangup was not classified as one", beforeGone)
+	}
+	if got := labelledCounter(t, "gopro_native_fallback_total", "reason", "timeout"); got > beforeTimeout {
+		t.Errorf("a client hangup was also counted as reason=timeout (%v -> %v)", beforeTimeout, got)
+	}
+}
+
+// labelledCounter reads one labelled counter out of the default registry.
+func labelledCounter(t *testing.T, name, label, value string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total float64
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == label && lp.GetValue() == value {
+					total += m.GetCounter().GetValue()
+				}
+			}
 		}
 	}
 	return total

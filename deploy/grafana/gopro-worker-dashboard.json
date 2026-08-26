@@ -1931,7 +1931,7 @@
     {
       "type": "timeseries",
       "title": "Fallback reasons",
-      "description": "Why a sampled request was not answered by us: auth_rejected, error, timeout, panic, rate_limited. Anything other than auth_rejected points at our own code.",
+      "description": "Why a sampled request was not answered by us. client_gone means the remote server hung up before we could answer -- common here, since Tuwunel-style servers do it constantly, and not a defect. timeout means our own budget expired, which is worth investigating. auth_rejected means we could not verify the signature. error and panic point at our code.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

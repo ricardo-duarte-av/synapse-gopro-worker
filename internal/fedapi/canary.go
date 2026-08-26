@@ -88,15 +88,29 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, endpoint, 
 	elapsed := time.Since(start)
 
 	if err != nil {
+		// Distinguish our deadline expiring from the client hanging up. The
+		// context carries both -- it is derived from the request's -- and
+		// conflating them reports a remote server's disconnect as a timeout of
+		// ours. On this deployment that is the common case, not the rare one:
+		// Tuwunel-style servers hang up on /state_ids constantly.
 		reason := "error"
-		if ctx.Err() != nil {
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			reason = "timeout"
+		case errors.Is(ctx.Err(), context.Canceled):
+			reason = "client_gone"
 		}
 		nativeFallback.WithLabelValues(endpoint, reason).Inc()
-		h.log.Warn().Err(err).
+		ev := h.log.Warn()
+		if reason == "client_gone" {
+			// Not a defect: nobody is left to answer.
+			ev = h.log.Debug()
+		}
+		ev.Err(err).
 			Str("endpoint", endpoint).Str("origin", result.Origin).
+			Str("reason", reason).
 			Dur("took", elapsed).
-			Msg("Native answer failed; falling back to Synapse")
+			Msg("Native answer not served; falling back to Synapse")
 		return false, reason, time.Since(attemptStart)
 	}
 

@@ -2073,7 +2073,7 @@
     {
       "type": "stat",
       "title": "Rejected (429)",
-      "description": "Requests refused outright. If this is non-zero while Synapse is not answering 429, our rc_federation is tighter than Synapse's and we are shedding load it would serve.",
+      "description": "Requests refused outright. If this is non-zero while Synapse is not answering 429, our rc_federation is tighter than Synapse's and we are shedding load it would serve. Note: gopro_requests_total{status=\"429\"} does not distinguish our rejections from Synapse's 429 relayed through the proxy. To ask whether we rejected anything, read gopro_rate_limited_origins or gopro_rate_limit_slept_total.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2143,7 +2143,7 @@
     {
       "type": "stat",
       "title": "Delayed",
-      "description": "Requests deliberately slowed rather than refused. Throttling starts here, well before any rejection, so this is the earlier warning of the two.",
+      "description": "Requests deliberately slowed rather than refused. Throttling starts here, well before any rejection, so this is the earlier warning of the two. Note: gopro_requests_total{status=\"429\"} does not distinguish our rejections from Synapse's 429 relayed through the proxy. To ask whether we rejected anything, read gopro_rate_limited_origins or gopro_rate_limit_slept_total.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2205,7 +2205,7 @@
     {
       "type": "stat",
       "title": "Origins rejected",
-      "description": "Distinct servers rejected since startup. Answers whether throttling is one noisy server or many, which the counters alone cannot say.",
+      "description": "Distinct servers rejected since startup. Answers whether throttling is one noisy server or many, which the counters alone cannot say. Note: gopro_requests_total{status=\"429\"} does not distinguish our rejections from Synapse's 429 relayed through the proxy. To ask whether we rejected anything, read gopro_rate_limited_origins or gopro_rate_limit_slept_total.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2266,7 +2266,7 @@
     {
       "type": "stat",
       "title": "Servers tracked",
-      "description": "Origin servers with live limiter state. Also a rough count of who is talking to us.",
+      "description": "Origin servers with live limiter state. Also a rough count of who is talking to us. Note: gopro_requests_total{status=\"429\"} does not distinguish our rejections from Synapse's 429 relayed through the proxy. To ask whether we rejected anything, read gopro_rate_limited_origins or gopro_rate_limit_slept_total.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2327,7 +2327,7 @@
     {
       "type": "stat",
       "title": "p99 limiter wait",
-      "description": "Latency the limiter itself adds. This is time we impose, not time we measure, so it is excluded from the native-vs-Synapse comparison.",
+      "description": "Latency the limiter itself adds. This is time we impose, not time we measure, so it is excluded from the native-vs-Synapse comparison. Note: gopro_requests_total{status=\"429\"} does not distinguish our rejections from Synapse's 429 relayed through the proxy. To ask whether we rejected anything, read gopro_rate_limited_origins or gopro_rate_limit_slept_total.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2389,7 +2389,7 @@
     {
       "type": "stat",
       "title": "Rejection share",
-      "description": "Share of requests refused by the limiter.",
+      "description": "Share of requests refused by the limiter. Note: gopro_requests_total{status=\"429\"} does not distinguish our rejections from Synapse's 429 relayed through the proxy. To ask whether we rejected anything, read gopro_rate_limited_origins or gopro_rate_limit_slept_total.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2459,7 +2459,7 @@
     {
       "type": "timeseries",
       "title": "Rate limiting by endpoint",
-      "description": "Rejections and delays per endpoint. There is deliberately no per-origin series: this server has exchanged keys with tens of thousands of others, and a label per origin would be a cardinality explosion. Which server is being limited is in the worker logs, at warn for rejections and info for delays.",
+      "description": "Rejections and delays per endpoint. There is deliberately no per-origin series: this server has exchanged keys with tens of thousands of others, and a label per origin would be a cardinality explosion. Which server is being limited is in the worker logs, at warn for rejections and info for delays. Note: gopro_requests_total{status=\"429\"} does not distinguish our rejections from Synapse's 429 relayed through the proxy. To ask whether we rejected anything, read gopro_rate_limited_origins or gopro_rate_limit_slept_total.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2533,7 +2533,7 @@
     {
       "type": "timeseries",
       "title": "Limiter wait time",
-      "description": "How long requests spend waiting on the limiter, by percentile.",
+      "description": "How long requests spend waiting on the limiter, by percentile. Note: gopro_requests_total{status=\"429\"} does not distinguish our rejections from Synapse's 429 relayed through the proxy. To ask whether we rejected anything, read gopro_rate_limited_origins or gopro_rate_limit_slept_total.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

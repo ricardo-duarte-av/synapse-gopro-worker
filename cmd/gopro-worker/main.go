@@ -177,8 +177,11 @@ func run() error {
 	if resolver != nil && verifier != nil {
 		// Canary and native modes need both. Passing them unconditionally is
 		// harmless: without a mode that serves natively, nothing calls them.
-		handlerOpts = append(handlerOpts, fedapi.WithNative(
-			resolver, verifier, time.Duration(cfg.Shadow.TimeoutSeconds)*time.Second))
+		nativeTimeout := time.Duration(cfg.NativeTimeoutSeconds) * time.Second
+		if nativeTimeout <= 0 {
+			nativeTimeout = 5 * time.Second
+		}
+		handlerOpts = append(handlerOpts, fedapi.WithNative(resolver, verifier, nativeTimeout))
 	}
 	handler := fedapi.New(cfg, p, runner, log, handlerOpts...)
 

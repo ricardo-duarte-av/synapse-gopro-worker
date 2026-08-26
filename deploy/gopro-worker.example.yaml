@@ -73,6 +73,16 @@ database:
     # tiny and many.
     filtered_state_mb: 64
 
+# How long an answer we are *serving* may take before falling back to Synapse.
+#
+# Deliberately separate from shadow.timeout_seconds, and much shorter. A shadow
+# computation has nobody waiting, so 30s there costs nothing. A served answer
+# has a remote server blocked on it, and this whole budget is spent *before*
+# the proxy is even asked -- so a timeout costs the client this plus Synapse's
+# own time. Measured p99 for /state_ids here is ~200ms, so a long budget
+# protects nothing; it only sets how much time can be wasted before giving up.
+native_timeout_seconds: 5
+
 endpoints:
   # proxy       - forward to Synapse, return its answer (Phase 1)
   # shadow      - forward to Synapse and serve that, but also compute our own

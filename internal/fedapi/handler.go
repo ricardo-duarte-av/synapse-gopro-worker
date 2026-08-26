@@ -38,8 +38,9 @@ type Handler struct {
 	verifier   Verifier
 	serverName string
 	// nativeTimeout bounds a natively served answer. Exceeding it falls back
-	// to the proxy, so a pathological room costs latency rather than a
-	// hung request.
+	// to the proxy, so a pathological room costs latency rather than a hung
+	// request -- but the whole budget is spent *before* the proxy is asked, so
+	// the client pays this plus Synapse's own time. It must stay short.
 	nativeTimeout time.Duration
 
 	// limitedOrigins tracks which servers have been rejected, so their count
@@ -67,7 +68,7 @@ func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.
 		log:           log,
 		captureLimit:  limit,
 		serverName:    cfg.ServerName,
-		nativeTimeout: 30 * time.Second,
+		nativeTimeout: 5 * time.Second,
 	}
 	for _, o := range opts {
 		o(h)
@@ -141,6 +142,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	roomID := roomIDFor(route)
 	eventID := eventIDFor(route, r)
 
+	// Tracked so a fallback can be accounted for end to end: the client pays
+	// our attempt plus Synapse's, and until now the second half was invisible.
+	var (
+		fellBack       bool
+		fallbackReason string
+		nativeSpent    time.Duration
+	)
+
 	// Canary and native modes answer some or all traffic themselves.
 	//
 	// The share is chosen by hashing the event ID rather than at random, so a
@@ -199,13 +208,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Msg("Rate limited: delayed request")
 		}
 
-		served := h.serveNative(w, r, endpointName, roomID, eventID)
+		served, reason, spent := h.serveNative(w, r, endpointName, roomID, eventID)
 		release()
 		if served {
 			metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "native").Inc()
 			return
 		}
 		nativeFallbackServed.WithLabelValues(endpointName).Inc()
+		fellBack, fallbackReason, nativeSpent = true, reason, spent
 	}
 
 	// Shadowing continues through canary, on the share still going to Synapse.
@@ -243,6 +253,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	endpoint := string(route.Endpoint)
+	if fellBack {
+		fallbackUpstream.WithLabelValues(endpoint, fallbackReason, statusLabel(res)).Inc()
+		fallbackTotalDuration.WithLabelValues(endpoint, fallbackReason).
+			Observe((nativeSpent + res.Duration).Seconds())
+	}
 	metrics.RequestsTotal.WithLabelValues(endpoint, mode.Kind, statusLabel(res)).Inc()
 	metrics.UpstreamDuration.WithLabelValues(endpoint).Observe(res.Duration.Seconds())
 	metrics.ResponseBytes.WithLabelValues(endpoint).Observe(float64(res.Bytes))

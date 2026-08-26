@@ -338,3 +338,50 @@ func TestCanaryComparesWhatItServed(t *testing.T) {
 		t.Error("the served answer was never compared against Synapse")
 	}
 }
+
+// A fallback must be accounted for end to end. The client pays our attempt
+// *and* Synapse's, and until this was measured there was no way to answer the
+// obvious question after a timeout: did Synapse actually answer it?
+func TestFallbackIsAccountedForEndToEnd(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"pdu_ids":[],"auth_chain_ids":[]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeCanary, CanaryPercent: 100},
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A resolver slower than the native budget, so the request times out and
+	// falls back -- the expensive case.
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop(),
+		WithNative(&slowResolver{delay: 2 * time.Second}, acceptingVerifier{}, 150*time.Millisecond)))
+	defer front.Close()
+
+	start := time.Now()
+	status, body := rawGet(t, front.Listener.Addr().String(),
+		"/_matrix/federation/v1/state_ids/%21r%3Aexample.com?event_id=%24evt",
+		`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`)
+	elapsed := time.Since(start)
+
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200 from the fallback", status)
+	}
+	if !strings.Contains(body, "pdu_ids") {
+		t.Errorf("body = %q, want Synapse's answer", body)
+	}
+	// The whole point of a short native budget: the client waits roughly the
+	// budget plus Synapse, not the resolver's full runtime.
+	if elapsed > time.Second {
+		t.Errorf("client waited %s; the native budget was 150ms, so a fallback "+
+			"should not cost the resolver's full 2s", elapsed)
+	}
+}

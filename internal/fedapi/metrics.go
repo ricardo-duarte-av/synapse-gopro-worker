@@ -36,6 +36,27 @@ var (
 		Help: "Requests sampled for native serving that were proxied instead.",
 	}, []string{"endpoint"})
 
+	// fallbackUpstream records what Synapse did for a request that fell back,
+	// and how long the client waited in total.
+	//
+	// Without this a fallback is invisible past the moment it happens: the
+	// upstream histogram covers every request, so there is no way to ask "did
+	// Synapse actually answer the one we gave up on". A timeout fallback is
+	// the expensive case -- the client pays our budget *and* Synapse's -- so
+	// it is the one worth being able to account for.
+	fallbackUpstream = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gopro_native_fallback_upstream_total",
+		Help: "Outcome at Synapse for requests that fell back, by fallback reason and upstream status class.",
+	}, []string{"endpoint", "reason", "upstream"})
+
+	// fallbackTotalDuration is the whole time the client waited on a
+	// fallen-back request: our attempt plus Synapse's.
+	fallbackTotalDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gopro_native_fallback_total_seconds",
+		Help:    "End-to-end time for a request that fell back, covering our attempt and Synapse's answer.",
+		Buckets: latencyBuckets,
+	}, []string{"endpoint", "reason"})
+
 	// nativeDuration measures only requests actually served natively, so it
 	// describes what remote servers experienced rather than what a shadow
 	// comparison computed.

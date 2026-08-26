@@ -92,6 +92,16 @@ type Config struct {
 	Shadow    Shadow    `yaml:"shadow"`
 	Auth      Auth      `yaml:"auth"`
 
+	// NativeTimeoutSeconds bounds an answer we are *serving*, after which the
+	// request falls back to Synapse. Zero uses 5s.
+	//
+	// Deliberately separate from shadow.timeout_seconds. A shadow computation
+	// has nobody waiting, so 30s there costs nothing; a served answer has a
+	// remote server blocked on it, and the timeout is spent *before* the proxy
+	// is even asked. With a measured p99 of ~200ms, a long budget protects
+	// nothing and merely sets how much time can be wasted before giving up.
+	NativeTimeoutSeconds int `yaml:"native_timeout_seconds"`
+
 	// Replication consumes Synapse's cache-invalidation stream over Redis. It
 	// is what makes the caches safe against events being deleted; without it
 	// they are knowingly stale until the process restarts.
@@ -303,6 +313,9 @@ func (c *Config) validate() error {
 	}
 	if err := c.Database.Cache.Validate(); err != nil {
 		return err
+	}
+	if c.NativeTimeoutSeconds < 0 {
+		return fmt.Errorf("native_timeout_seconds must not be negative")
 	}
 	if c.Replication.Enabled {
 		if c.Replication.Address == "" {

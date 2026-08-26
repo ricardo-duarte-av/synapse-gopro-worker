@@ -53,10 +53,11 @@ func sampled(mode config.Mode, key string) bool {
 // whole safety property of a canary: any doubt costs latency, never
 // correctness. Nothing is written until a complete answer exists, so a failure
 // halfway through cannot leave a half-written response.
-func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, endpoint, roomID, eventID string) bool {
+func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, endpoint, roomID, eventID string) (served bool, reason string, spent time.Duration) {
 	if h.resolver == nil {
-		return false
+		return false, "no_resolver", 0
 	}
+	attemptStart := time.Now()
 
 	// Verification happens on the real request here, not on a replay. A canary
 	// answer is served, so an unverified origin would be reading room state it
@@ -76,7 +77,7 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, endpoint, 
 	result := h.verifier.Verify(r)
 	if !result.OK() {
 		nativeFallback.WithLabelValues(endpoint, "auth_rejected").Inc()
-		return false
+		return false, "auth_rejected", time.Since(attemptStart)
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.nativeTimeout)
@@ -96,7 +97,7 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, endpoint, 
 			Str("endpoint", endpoint).Str("origin", result.Origin).
 			Dur("took", elapsed).
 			Msg("Native answer failed; falling back to Synapse")
-		return false
+		return false, reason, time.Since(attemptStart)
 	}
 
 	nativeDuration.WithLabelValues(endpoint).Observe(elapsed.Seconds())
@@ -112,7 +113,7 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, endpoint, 
 	// the wrong requests. This checks the ones that actually reached a remote
 	// server, at the cost of one extra upstream request and no latency.
 	h.compareServed(r, endpoint, roomID, eventID, body, status, elapsed)
-	return true
+	return true, "", time.Since(attemptStart)
 }
 
 // compareServed asks Synapse what it would have answered, and records any

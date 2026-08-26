@@ -206,6 +206,10 @@ func (r *Runner) finish(req Request, proxy ProxyResult, elapsed time.Duration, n
 			r.upstreamKeyFetchFailed(req, proxy, nativeStatus)
 			return
 		}
+		if proxy.Status == http.StatusTooManyRequests && nativeStatus != http.StatusTooManyRequests {
+			r.upstreamRateLimited(req, nativeStatus)
+			return
+		}
 		r.record(req, proxy, elapsed, &difflog.Record{
 			Kind:         difflog.KindStatus,
 			NativeStatus: nativeStatus,
@@ -520,4 +524,29 @@ func (r *Runner) CompareServed(req Request, proxy ProxyResult, elapsed time.Dura
 	}
 	canaryCompared.WithLabelValues(req.Endpoint).Inc()
 	r.finish(req, proxy, elapsed, nativeBody, nativeStatus)
+}
+
+// upstreamRateLimited records a disagreement caused by Synapse shedding load
+// rather than by answering differently.
+//
+// A 429 is not a verdict on the request: Synapse declined to compute an answer,
+// so there is nothing to compare ours against. It is the same shape as a key
+// fetch failure (§6.10) and is treated the same way.
+//
+// This is a designed divergence, not a defect. Our limiter is deliberately
+// inactive while an endpoint is proxied or shadowed -- Synapse answers
+// everything then, and its own limiter already protects it, so adding ours in
+// front would put the traffic through two limiters in series. In canary it
+// gates only the share we serve. So whenever Synapse sheds load, we will have
+// computed an answer it did not.
+//
+// Counted and logged rather than dropped: a sustained rise means Synapse is
+// struggling with traffic we are absorbing, which is worth seeing.
+func (r *Runner) upstreamRateLimited(req Request, nativeStatus int) {
+	shadowSkipped.WithLabelValues(req.Endpoint, "upstream_rate_limited").Inc()
+	r.log.Info().
+		Str("endpoint", req.Endpoint).
+		Str("origin", req.Origin).
+		Int("native_status", nativeStatus).
+		Msg("Synapse rate limited this request; we computed an answer. Not counted as a mismatch")
 }

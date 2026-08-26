@@ -1,7 +1,11 @@
 package shadow
 
 import (
+	"time"
+
 	"encoding/json"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/rs/zerolog"
 	"testing"
 )
 
@@ -214,4 +218,86 @@ func TestUpstreamKeyFetchFailureIsRecognised(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Synapse shedding load is not a disagreement about the answer. Our limiter is
+// deliberately inactive while proxying or shadowing, so every 429 Synapse
+// issues would otherwise be recorded as a mismatch -- 58 of them in one hour
+// when two servers started hammering, none of which said anything about
+// whether our answers were right.
+//
+// Driven through the runner rather than by restating the condition: the point
+// is that no diff is recorded and the skip is counted.
+func TestUpstreamRateLimitIsNotAMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		proxyStatus  int
+		nativeStatus int
+		wantMismatch bool
+	}{
+		{"synapse shed load, we answered", 429, 200, false},
+		{"synapse shed load, we refused for another reason", 429, 403, false},
+		{"a real status disagreement is still reported", 403, 200, true},
+		{"synapse 404, we 200", 404, 200, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			beforeSkip := labelled(t, "gopro_shadow_skipped_total", "reason", "upstream_rate_limited")
+			beforeRecorded := counterTotal(t, "gopro_shadow_results_total")
+
+			r := NewRunner(nil, "example.com", nil, nil, zerolog.Nop(), Options{Concurrency: 1})
+			r.finish(Request{Endpoint: "state_ids", Origin: "noisy.example"},
+				ProxyResult{Status: tc.proxyStatus, Body: []byte(`{"errcode":"M_LIMIT_EXCEEDED"}`)},
+				time.Millisecond, []byte(`{"pdu_ids":[],"auth_chain_ids":[]}`), tc.nativeStatus)
+
+			gotMismatch := counterTotal(t, "gopro_shadow_results_total") > beforeRecorded
+			gotSkip := labelled(t, "gopro_shadow_skipped_total", "reason", "upstream_rate_limited") > beforeSkip
+
+			if gotMismatch != tc.wantMismatch {
+				t.Errorf("recorded a mismatch = %v, want %v", gotMismatch, tc.wantMismatch)
+			}
+			if !tc.wantMismatch && !gotSkip {
+				t.Error("not counted as upstream_rate_limited either, so it vanished silently")
+			}
+		})
+	}
+}
+
+func counterTotal(t *testing.T, name string) float64 {
+	t.Helper()
+	fams, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total float64
+	for _, f := range fams {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			total += m.GetCounter().GetValue()
+		}
+	}
+	return total
+}
+
+func labelled(t *testing.T, name, label, value string) float64 {
+	t.Helper()
+	fams, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total float64
+	for _, f := range fams {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == label && lp.GetValue() == value {
+					total += m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return total
 }

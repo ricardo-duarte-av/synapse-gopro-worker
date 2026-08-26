@@ -1667,7 +1667,7 @@
     {
       "type": "timeseries",
       "title": "Comparisons skipped",
-      "description": "Requests not counted either way, so the match rate is measured over less traffic than it appears. upstream_key_fetch_failed means Synapse could not fetch the origin's keys and we could -- not a defect, but a rise means something changed in key resolution.",
+      "description": "Requests not counted either way, so the match rate covers less traffic than it appears. upstream_key_fetch_failed and upstream_rate_limited both mean Synapse never produced an answer to compare against -- the second is Synapse shedding load, which our limiter deliberately does not mirror while proxying or shadowing. A sustained rise in upstream_rate_limited means Synapse is struggling with traffic we are absorbing.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

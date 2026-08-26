@@ -1985,7 +1985,7 @@
     {
       "type": "timeseries",
       "title": "Native answer latency",
-      "description": "Time to produce an answer that was actually served. Unlike the shadow histogram this describes what remote servers experienced.",
+      "description": "Time to produce an answer that was actually served, over the whole selected range rather than per bucket: a canary serves few requests, and any bucket with no observations yields NaN and draws as an empty panel. Unlike the shadow histogram this describes what remote servers experienced.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2029,7 +2029,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(gopro_native_duration_seconds_bucket{job=~\"$job\"}[$bucket])))",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(gopro_native_duration_seconds_bucket{job=~\"$job\"}[$__range])))",
           "legendFormat": "p50",
           "range": true,
           "refId": "A"
@@ -2040,7 +2040,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le) (rate(gopro_native_duration_seconds_bucket{job=~\"$job\"}[$bucket])))",
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(gopro_native_duration_seconds_bucket{job=~\"$job\"}[$__range])))",
           "legendFormat": "p90",
           "range": true,
           "refId": "B"
@@ -2051,7 +2051,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_native_duration_seconds_bucket{job=~\"$job\"}[$bucket])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_native_duration_seconds_bucket{job=~\"$job\"}[$__range])))",
           "legendFormat": "p99",
           "range": true,
           "refId": "C"

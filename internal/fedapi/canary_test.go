@@ -824,3 +824,44 @@ func TestNativeRequestIsTimedEndToEnd(t *testing.T) {
 		t.Errorf("gopro_native_duration_seconds observed %d times, want 1", got)
 	}
 }
+
+// Response size must be observed for answers we served, not only proxied ones.
+//
+// metrics.ResponseBytes was recorded on the proxy path alone, so a promoted
+// endpoint reported no payload sizes at all -- state_ids went native and its
+// size histogram went empty. That is not a cosmetic gap: payload size is the
+// measurement the /state decision turns on, and the case for reopening /state
+// rests on knowing how large these responses actually get.
+func TestNativelyServedResponseSizeIsObserved(t *testing.T) {
+	before := histogramCount(t, "gopro_response_bytes")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeNative},
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(New(cfg, p,
+		nil, zerolog.Nop(),
+		WithNative(&fakeResolver{resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}}},
+			acceptingVerifier{}, 5*time.Second, 30*time.Second)))
+	defer front.Close()
+
+	if status, _ := rawGet(t, front.Listener.Addr().String(),
+		"/_matrix/federation/v1/state_ids/%21r%3Aexample.com?event_id=%24evt",
+		`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`); status != http.StatusOK {
+		t.Fatal("want 200 served natively")
+	}
+
+	if got := histogramCount(t, "gopro_response_bytes") - before; got != 1 {
+		t.Errorf("gopro_response_bytes observed %d times, want 1", got)
+	}
+}

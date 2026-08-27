@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 
 	"github.com/daedric/synapse-gopro-worker/internal/difflog"
@@ -260,5 +261,57 @@ func TestRunnerTreatsAuthRejectionAsTheAnswer(t *testing.T) {
 	waitFor(t, func() bool { return w.Snapshot().Compared == 1 })
 	if got := w.Snapshot().Matched; got != 1 {
 		t.Errorf("Matched = %d, want 1 when no verifier is configured", got)
+	}
+}
+
+// histCount reports observations held by a histogram, summed over labels.
+func histCount(t *testing.T, name string) uint64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total uint64
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			total += m.GetHistogram().GetSampleCount()
+		}
+	}
+	return total
+}
+
+// A verified answer must record both sides' latency, not just its correctness.
+//
+// These histograms were observed only on the shadow path. That left the
+// Native-vs-Synapse comparison blind to exactly the traffic we served, and at
+// canary:100 there is no shadow path at all -- so the panel that demonstrates
+// the point of the project went empty at the moment the project started
+// working. proxy.Duration on this path is Synapse answering the verification
+// replay: the same work, on the same request, which is what makes the two
+// legitimately comparable.
+func TestCompareServedRecordsBothLatencies(t *testing.T) {
+	beforeNative := histCount(t, "gopro_shadow_duration_seconds")
+	beforeUpstream := histCount(t, "gopro_shadow_upstream_duration_seconds")
+
+	r, _ := newTestRunner(t, &fakeResolver{
+		resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}},
+	}, Options{Concurrency: 1, Timeout: time.Second})
+
+	body := []byte(`{"pdu_ids":["$a"],"auth_chain_ids":[]}`)
+	r.CompareServed(req(), ProxyResult{
+		Status:   200,
+		Body:     body,
+		Duration: 250 * time.Millisecond,
+	}, 3*time.Millisecond, body, 200)
+
+	if got := histCount(t, "gopro_shadow_duration_seconds") - beforeNative; got != 1 {
+		t.Errorf("native latency observed %d times, want 1", got)
+	}
+	if got := histCount(t, "gopro_shadow_upstream_duration_seconds") - beforeUpstream; got != 1 {
+		t.Errorf("Synapse's latency observed %d times, want 1: without it a "+
+			"promoted endpoint cannot be compared against the thing it replaced", got)
 	}
 }

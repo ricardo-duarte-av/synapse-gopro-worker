@@ -523,6 +523,18 @@ func (r *Runner) CompareServed(req Request, proxy ProxyResult, elapsed time.Dura
 		return
 	}
 	canaryCompared.WithLabelValues(req.Endpoint).Inc()
+
+	// Record both sides here too, over the same set of requests.
+	//
+	// These were observed only on the shadow path, which meant the
+	// Native-vs-Synapse comparison went dark for exactly the traffic we
+	// served -- and at canary:100 there is no shadow path left, so the panel
+	// that demonstrates the point of the project emptied out at the moment
+	// the project started working. proxy.Duration here is Synapse answering
+	// the verification replay, which is the same work on the same request.
+	shadowDuration.WithLabelValues(req.Endpoint).Observe(elapsed.Seconds())
+	shadowUpstreamDuration.WithLabelValues(req.Endpoint).Observe(proxy.Duration.Seconds())
+
 	r.finish(req, proxy, elapsed, nativeBody, nativeStatus)
 }
 

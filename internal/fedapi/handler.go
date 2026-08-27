@@ -226,6 +226,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		release()
 		if nat.Served {
 			metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "native").Inc()
+			// Response size is observed on the proxy path only, so a promoted
+			// endpoint reported none at all -- and payload size is what the
+			// /state decision turns on.
+			metrics.ResponseBytes.WithLabelValues(endpointName).Observe(float64(nat.Bytes))
 
 			// Logged here because the request ends here: the shared log below
 			// runs after the proxy forward, so until now everything we

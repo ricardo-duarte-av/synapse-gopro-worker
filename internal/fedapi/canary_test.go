@@ -865,3 +865,67 @@ func TestNativelyServedResponseSizeIsObserved(t *testing.T) {
 		t.Errorf("gopro_response_bytes observed %d times, want 1", got)
 	}
 }
+
+// A client that has gone must not cost Synapse an answer.
+//
+// The fallback exists to give a remote server a response we could not produce.
+// When it hung up there is nobody to receive one, and forwarding only asks
+// Synapse to compute a body that will be discarded -- on /state_ids that is
+// seconds of database time each, and on this deployment the case is common:
+// Tuwunel-style servers hang up on /state_ids constantly.
+//
+// The upstream handler counts its own calls, which is the only assertion that
+// can distinguish "we skipped the forward" from "we forwarded and the write
+// failed". A test that watched the response would not tell those apart,
+// because there is no client left to observe either outcome.
+func TestClientGoneDoesNotForwardToSynapse(t *testing.T) {
+	before := labelledCounter(t, "gopro_upstream_skipped_total", "endpoint", "state_ids")
+
+	var upstreamHits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeCanary, CanaryPercent: 100},
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop(),
+		WithNative(&slowResolver{delay: 3 * time.Second}, acceptingVerifier{}, 30*time.Second, 30*time.Second)))
+	defer front.Close()
+
+	conn, err := net.DialTimeout("tcp", front.Listener.Addr().String(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(conn, "GET /_matrix/federation/v1/state_ids/%21r%3Aex?event_id=%24e HTTP/1.1\r\n"+
+		"Host: example.com\r\n"+
+		`Authorization: X-Matrix origin="n.example",destination="example.com",key="ed25519:a",sig="x"`+"\r\n"+
+		"Connection: close\r\n\r\n")
+	time.Sleep(200 * time.Millisecond)
+	conn.Close()
+
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) &&
+		labelledCounter(t, "gopro_upstream_skipped_total", "endpoint", "state_ids") <= before {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if got := labelledCounter(t, "gopro_upstream_skipped_total", "endpoint", "state_ids"); got <= before {
+		t.Fatalf("gopro_upstream_skipped_total stayed at %v: the forward was not skipped", before)
+	}
+	// Settle, so a forward racing behind the counter would still be seen.
+	time.Sleep(300 * time.Millisecond)
+	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
+		t.Errorf("Synapse was asked for %d answer(s) nobody was waiting for", got)
+	}
+}

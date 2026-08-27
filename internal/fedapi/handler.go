@@ -254,8 +254,44 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Msg("Served federation request")
 			return
 		}
-		nativeFallbackServed.WithLabelValues(endpointName).Inc()
 		fellBack, fallbackReason, nativeSpent = true, nat.Reason, nat.Spent
+	}
+
+	// A client that has gone needs no answer, from us or from Synapse.
+	//
+	// Falling back exists to give a remote server an answer we could not
+	// produce ourselves. When it hung up there is nobody left to receive one,
+	// and forwarding only asks Synapse to compute a response that will be
+	// discarded -- on /state_ids that is seconds of database time per request,
+	// so it is real work rather than a rounding error. On this deployment the
+	// case is common rather than rare: Tuwunel-style servers hang up on
+	// /state_ids constantly.
+	//
+	// The check is on the request context rather than the fallback reason
+	// because that is the direct question -- is anyone still waiting -- and it
+	// covers proxy and shadow mode too, where the client can disconnect before
+	// we ever start. Nothing is lost by stopping here: a cancelled request is
+	// already excluded from shadow comparison, since a partial answer cannot
+	// be judged against anything.
+	if r.Context().Err() != nil {
+		upstreamSkipped.WithLabelValues(endpointName).Inc()
+		metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "canceled").Inc()
+		h.log.Debug().
+			Str("endpoint", endpointName).
+			Str("origin", origin).
+			Str("mode", mode.String()).
+			Bool("fell_back", fellBack).
+			Str("fallback_reason", fallbackReason).
+			Dur("total_ms", time.Since(start)).
+			Msg("Client gone before we answered; not forwarding to Synapse")
+		return
+	}
+
+	// Counted here rather than at the fallback itself: this metric means the
+	// proxy went on to serve the request, which is only true once we have got
+	// past the check above.
+	if fellBack {
+		nativeFallbackServed.WithLabelValues(endpointName).Inc()
 	}
 
 	// Shadowing continues through canary, on the share still going to Synapse.

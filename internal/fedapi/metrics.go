@@ -60,6 +60,18 @@ var (
 	// nativeDuration measures only requests actually served natively, so it
 	// describes what remote servers experienced rather than what a shadow
 	// comparison computed.
+	// upstreamSkipped counts requests never forwarded because the client had
+	// already hung up.
+	//
+	// This is the work Synapse is spared. It is worth its own counter rather
+	// than being inferred from the cancelled-request count, because those two
+	// differ: a request can be cancelled after we forwarded it, and only the
+	// ones cancelled *before* represent work avoided.
+	upstreamSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gopro_upstream_skipped_total",
+		Help: "Requests not forwarded to Synapse because the client had already gone.",
+	}, []string{"endpoint"})
+
 	nativeDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "gopro_native_duration_seconds",
 		Help:    "Time to produce an answer that was served natively.",

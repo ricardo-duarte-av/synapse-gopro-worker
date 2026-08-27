@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
+
+	"github.com/daedric/synapse-gopro-worker/internal/store"
 )
 
 // Synapse drops out-of-range depths from /state but not from /event. This
@@ -256,4 +260,82 @@ func TestDigestStateResponse(t *testing.T) {
 			t.Error("a non-JSON response was accepted")
 		}
 	})
+}
+
+// A padded base64 hash must not make an event unredactable.
+//
+// mautrix types hashes.sha256 as jsonbytes.UnpaddedBytes, so a padded value
+// fails to decode and the whole PDU parse fails -- taking redaction with it.
+// The spec says unpadded, but a remote server sent padded and Synapse stored
+// and serves it verbatim. Eight redacted events here carry one, and refusing
+// them means an event we cannot answer at all, which stops being survivable
+// once there is no proxy left to fall back to.
+func TestRedactionToleratesPaddedHash(t *testing.T) {
+	const padded = "R45XT16GZqZDfOe+vDVuQYfloQLDXoDRwJ843JCro/A="
+	ev := &store.Event{
+		EventID:     "$x",
+		RoomID:      "!r:example.com",
+		Type:        "m.room.member",
+		RoomVersion: "11",
+		RedactedBy:  "$redaction",
+		JSON: []byte(`{"type":"m.room.member","room_id":"!r:example.com","sender":"@a:b",` +
+			`"state_key":"@a:b","depth":5,"origin_server_ts":1,` +
+			`"content":{"membership":"join","displayname":"drop me"},` +
+			`"hashes":{"sha256":"` + padded + `"},` +
+			`"auth_events":[],"prev_events":[],"unsigned":{"age_ts":7}}`),
+	}
+
+	out, err := redactEvent(ev)
+	if err != nil {
+		t.Fatalf("redactEvent: %v", err)
+	}
+
+	// The served event must carry the bytes Synapse stored: redaction leaves
+	// hashes untouched, so re-encoding it unpadded would change an event the
+	// signature covers.
+	if got := gjson.GetBytes(out, "hashes.sha256").Str; got != padded {
+		t.Errorf("hashes.sha256 = %q, want the stored value %q", got, padded)
+	}
+	// And it must actually be redacted.
+	if gjson.GetBytes(out, "content.displayname").Exists() {
+		t.Error("content survived redaction")
+	}
+	if got := gjson.GetBytes(out, "content.membership").Str; got != "join" {
+		t.Errorf("membership = %q, want it kept by the redaction rules", got)
+	}
+}
+
+func TestUnpadEventHash(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		body        string
+		wantChanged bool
+	}{
+		{"padded", `{"hashes":{"sha256":"AAA="}}`, true},
+		{"unpadded", `{"hashes":{"sha256":"AAA"}}`, false},
+		{"no hashes", `{"type":"m.room.member"}`, false},
+		{"hashes without sha256", `{"hashes":{"other":"x"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, orig := unpadEventHash([]byte(tc.body))
+			if tc.wantChanged {
+				if orig == nil {
+					t.Fatal("padded hash was not detected")
+				}
+				if got := gjson.GetBytes(src, "hashes.sha256").Str; got != "AAA" {
+					t.Errorf("parse copy has %q, want the padding stripped", got)
+				}
+				if !strings.Contains(string(orig), "AAA=") {
+					t.Errorf("original hashes = %s, want the padded value preserved", orig)
+				}
+				return
+			}
+			if orig != nil {
+				t.Errorf("unchanged event reported as padded: %s", orig)
+			}
+			if string(src) != tc.body {
+				t.Errorf("body was altered: %s", src)
+			}
+		})
+	}
 }

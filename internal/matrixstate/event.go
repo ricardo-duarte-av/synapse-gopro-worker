@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"maunium.net/go/mautrix/federation/pdu"
 	"maunium.net/go/mautrix/id"
@@ -202,17 +204,31 @@ func redactEvent(ev *store.Event) ([]byte, error) {
 		roomVersion = id.RoomV1
 	}
 
+	// Parsed from a padding-normalised copy, and the original hashes spliced
+	// back afterwards.
+	//
+	// mautrix types hashes.sha256 as jsonbytes.UnpaddedBytes, so a padded
+	// value fails to decode and the whole event becomes unredactable. The spec
+	// says unpadded, but a remote server sent padded and Synapse stored and
+	// serves it verbatim -- eight redacted events here carry one. Refusing
+	// them would mean an event we simply cannot answer, which matters most
+	// once there is no proxy left to fall back to.
+	//
+	// The stored bytes are never altered on the way out: redaction preserves
+	// hashes unchanged, so whatever was stored is restored over the result.
+	source, padded := unpadEventHash(ev.JSON)
+
 	var redacted []byte
 	var err error
 	if usesV1EventFormat(roomVersion) {
 		var p pdu.RoomV1PDU
-		if err := json.Unmarshal(ev.JSON, &p); err != nil {
+		if err := json.Unmarshal(source, &p); err != nil {
 			return nil, fmt.Errorf("parse v1 pdu: %w", err)
 		}
 		redacted, err = json.Marshal(p.Redact(roomVersion))
 	} else {
 		var p pdu.PDU
-		if err := json.Unmarshal(ev.JSON, &p); err != nil {
+		if err := json.Unmarshal(source, &p); err != nil {
 			return nil, fmt.Errorf("parse pdu: %w", err)
 		}
 		redacted, err = json.Marshal(p.Redact(roomVersion))
@@ -220,7 +236,36 @@ func redactEvent(ev *store.Event) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode redacted pdu: %w", err)
 	}
+	if padded != nil {
+		// Redaction keeps hashes untouched, so the served event must carry the
+		// bytes Synapse stored, padding and all.
+		redacted, err = sjson.SetRawBytes(redacted, "hashes", padded)
+		if err != nil {
+			return nil, fmt.Errorf("restore hashes: %w", err)
+		}
+	}
 	return restorePrunedUnsigned(ev.JSON, redacted)
+}
+
+// unpadEventHash returns the event with hashes.sha256 stripped of base64
+// padding, and the original hashes object when it had to change.
+//
+// Returns the input untouched, and a nil original, when nothing needed doing --
+// which is every event but a handful.
+func unpadEventHash(body []byte) (source []byte, originalHashes []byte) {
+	hashes := gjson.GetBytes(body, "hashes")
+	if !hashes.Exists() {
+		return body, nil
+	}
+	sha := gjson.GetBytes(body, "hashes.sha256")
+	if !sha.Exists() || !strings.HasSuffix(sha.Str, "=") {
+		return body, nil
+	}
+	fixed, err := sjson.SetBytes(body, "hashes.sha256", strings.TrimRight(sha.Str, "="))
+	if err != nil {
+		return body, nil
+	}
+	return fixed, []byte(hashes.Raw)
 }
 
 // prunedUnsignedFields are the unsigned keys that survive redaction.

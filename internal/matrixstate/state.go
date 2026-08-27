@@ -229,6 +229,27 @@ func (r *Resolver) streamEvents(ctx context.Context, w io.Writer, digest *digest
 			if !ok {
 				continue
 			}
+
+			// Rejected events are not served.
+			//
+			// Synapse reaches both arrays through get_events_as_list, whose
+			// allow_rejected defaults to false, so an event that failed auth
+			// is dropped from the response entirely. /event is the exception
+			// that makes this easy to miss: get_persisted_pdu passes
+			// allow_rejected=True and does serve them.
+			//
+			// It shows up in the auth chain rather than in the state, because
+			// state resolution already excludes rejected events while
+			// event_auth links still reference them. Found live: three
+			// rejected m.room.member events for one user put our auth_chain at
+			// 5,245 against Synapse's 5,242, with the pdus array identical.
+			//
+			// Skipped before `found` is appended, because Synapse computes the
+			// auth chain from the pdus that survived this filter.
+			if ev.RejectedReason != "" {
+				continue
+			}
+
 			if found != nil {
 				*found = append(*found, id)
 			}

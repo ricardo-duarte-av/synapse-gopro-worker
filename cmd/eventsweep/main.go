@@ -64,20 +64,42 @@ type stratum struct {
 var strata = []stratum{
 	{
 		Name: "invisible",
-		Why:  "predates our own join in a joined/invited room; Synapse must redact these for us",
+		Why:  "predates the server's earliest presence in a room that was never publicly readable; Synapse must redact these for us",
 		Query: `
-			WITH vis AS (
-			  SELECT c.room_id
-			  FROM current_state_events c JOIN event_json ej USING (event_id)
-			  WHERE c.type = 'm.room.history_visibility'
-			    AND split_part(split_part(ej.json, '"history_visibility":"', 2), '"', 1)
-			        IN ('joined','invited')
+			WITH hv AS (
+			  SELECT e.room_id,
+			         split_part(split_part(ej.json, '"history_visibility":"', 2), '"', 1) AS v
+			  FROM events e JOIN event_json ej USING (event_id)
+			  WHERE e.type = 'm.room.history_visibility'
 			),
-			ourjoin AS (
-			  SELECT e.room_id, min(e.stream_ordering) AS first_join
-			  FROM current_state_events c
-			  JOIN events e ON e.event_id = c.event_id
-			  JOIN room_memberships rm ON rm.event_id = c.event_id
+			-- Rooms that have NEVER been shared or world_readable.
+			--
+			-- Selecting on *current* visibility is wrong, and was wrong here
+			-- first time round: filter_events_for_server uses the visibility
+			-- at the event, and shared short-circuits the membership check
+			-- entirely. A room that is invited today may have been shared when
+			-- the events were sent, so its history is visible to everyone and
+			-- the stratum tests nothing.
+			restrictive AS (
+			  SELECT room_id FROM hv GROUP BY room_id
+			  HAVING NOT (array_agg(DISTINCT v) && ARRAY['shared','world_readable'])
+			),
+			-- The earliest join by any local user, across all history.
+			--
+			-- current_state_events holds only each user's latest membership
+			-- event, so "before our current join" is not "before the server
+			-- was present" -- the server may have been in the room for years
+			-- through a bot whose join was later superseded.
+			--
+			-- Restricted to those rooms first: user_id LIKE '%:domain' cannot
+			-- use an index, so scanning all of room_memberships for it times
+			-- out. Joining from the 77 rooms via events.room_id turns a 30s+
+			-- scan into under two seconds.
+			firstjoin AS (
+			  SELECT e.room_id, min(e.stream_ordering) AS so
+			  FROM restrictive r
+			  JOIN events e ON e.room_id = r.room_id
+			  JOIN room_memberships rm ON rm.event_id = e.event_id
 			  WHERE rm.user_id LIKE '%:' || $2 AND rm.membership = 'join'
 			  GROUP BY e.room_id
 			)
@@ -86,8 +108,8 @@ var strata = []stratum{
 			         row_number() OVER (PARTITION BY e.room_id
 			                            ORDER BY e.stream_ordering DESC) AS rn
 			  FROM events e
-			  JOIN vis USING (room_id) JOIN ourjoin j USING (room_id)
-			  WHERE e.stream_ordering < j.first_join
+			  JOIN restrictive USING (room_id) JOIN firstjoin f USING (room_id)
+			  WHERE e.stream_ordering < f.so
 			) t WHERE rn <= 10 LIMIT $1`,
 	},
 	{

@@ -94,7 +94,22 @@ func (r *Resolver) Event(ctx context.Context, origin, serverName, eventID string
 }
 
 // eventVisible applies Synapse's filter_events_for_server to a single event.
+//
+// /event refuses partial-state rooms before reaching here, so the
+// partial-state rule can never fire on that path.
 func (r *Resolver) eventVisible(ctx context.Context, ev *store.Event, targetServer, localServer string) (bool, error) {
+	return r.eventVisibleInRoom(ctx, ev, targetServer, localServer, false)
+}
+
+// eventVisibleInRoom is eventVisible with the room's partial-state status
+// supplied, for the one endpoint that permits such rooms.
+//
+// /get_missing_events allows partially-joined rooms and relies on this filter
+// to remove what it must, rather than refusing the request. The rule, from
+// filter_events_for_server: an event is invisible when the room is
+// partial-stated *and* its sender is not local -- we have not yet resolved
+// enough state to judge a remote sender's event.
+func (r *Resolver) eventVisibleInRoom(ctx context.Context, ev *store.Event, targetServer, localServer string, partialStateRoom bool) (bool, error) {
 	sender, err := senderOf(ev.JSON)
 	if err != nil {
 		return false, err
@@ -105,10 +120,7 @@ func (r *Resolver) eventVisible(ctx context.Context, ev *store.Event, targetServ
 		return false, fmt.Errorf("erased users: %w", err)
 	}
 
-	// A remote server's events in a partially-joined room are invisible; the
-	// room is not partial-stated here, so this is always false at this point,
-	// but it is kept explicit to match the original.
-	partialStateInvisible := false
+	partialStateInvisible := partialStateRoom && domainOf(sender) != localServer
 
 	vis, memberships, err := r.visibilityAt(ctx, ev, targetServer)
 	if err != nil {

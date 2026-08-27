@@ -89,6 +89,19 @@ func (s *Store) GetEvents(ctx context.Context, eventIDs []string) (map[string]*E
 // package must use GetEvents, so that a redacted event can never be returned
 // looking un-redacted.
 func (s *Store) getEventsRaw(ctx context.Context, eventIDs []string) (map[string]*Event, error) {
+	return s.getEventsRawOpt(ctx, eventIDs, true)
+}
+
+// getEventsRawOpt is getEventsRaw with control over whether what it reads is
+// admitted to the cache.
+//
+// /state reads every state event in a room -- 145,000 of them here, about 97MB
+// -- and admitting that would evict the entire working set that /event depends
+// on, to hold events that will not be asked for again. It is the same rule as
+// the filtered-state cache: a scan must not be allowed to displace a working
+// set. Reading *from* the cache stays worthwhile, so only the write is
+// suppressed.
+func (s *Store) getEventsRawOpt(ctx context.Context, eventIDs []string, populateCache bool) (map[string]*Event, error) {
 	out := make(map[string]*Event, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return out, nil
@@ -140,7 +153,9 @@ func (s *Store) getEventsRaw(ctx context.Context, eventIDs []string) (map[string
 			e.RejectedReason = *rejected
 		}
 		out[e.EventID] = &e
-		s.caches.events.Add(e.EventID, &e)
+		if populateCache {
+			s.caches.events.Add(e.EventID, &e)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: event rows: %w", err)
@@ -159,4 +174,49 @@ func (s *Store) HasEvent(ctx context.Context, eventID string) (bool, error) {
 		return false, fmt.Errorf("store: has event: %w", err)
 	}
 	return true, nil
+}
+
+// DefaultEventBatch bounds how many events are materialised at once.
+//
+// Sized so a chunk stays in the low megabytes for typical events while keeping
+// the number of round trips small: the largest room here has 145,424 state
+// events, which is 146 queries rather than one 97MB result set.
+const DefaultEventBatch = 1000
+
+// GetEventsBatched loads events in bounded chunks, handing each chunk to fn.
+//
+// This exists because /state is the one endpoint whose response cannot be held
+// in memory: the largest room here resolves to about 97MB of event JSON, and
+// materialising that per request is precisely what makes Synapse's /state cost
+// ~53 seconds and drives its worker to half a gigabyte. Chunking keeps peak
+// memory proportional to the chunk, not the room.
+//
+// Chunks are not admitted to the event cache -- see getEventsRawOpt. Events we
+// do not have are simply absent from a chunk, matching Synapse, so fn must
+// tolerate a chunk smaller than the IDs it was asked for.
+//
+// fn must not retain the map: it is not reused, but the events in it are the
+// cached pointers, and callers have mutated shared events before (§6.1, §6.3).
+func (s *Store) GetEventsBatched(ctx context.Context, eventIDs []string, batch int, fn func(map[string]*Event) error) error {
+	if batch <= 0 {
+		batch = DefaultEventBatch
+	}
+	for start := 0; start < len(eventIDs); start += batch {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		end := min(start+batch, len(eventIDs))
+
+		events, err := s.getEventsRawOpt(ctx, eventIDs[start:end], false)
+		if err != nil {
+			return err
+		}
+		if err := s.applyRedactions(ctx, events); err != nil {
+			return err
+		}
+		if err := fn(events); err != nil {
+			return err
+		}
+	}
+	return nil
 }

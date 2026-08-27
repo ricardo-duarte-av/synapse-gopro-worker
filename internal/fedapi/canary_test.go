@@ -1,13 +1,16 @@
 package fedapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -627,5 +630,126 @@ func TestNativeDoesNotVerifyButCanaryDoes(t *testing.T) {
 					"Synapse stops doing the work, so a served answer must not be replayed", got)
 			}
 		})
+	}
+}
+
+// safeBuf collects log output written from the handler goroutine while the
+// test reads it.
+type safeBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A natively served request must appear in the request log.
+//
+// It did not: the served path returns before the shared log statement, which
+// runs after the proxy forward. While native traffic was a rounding error that
+// was merely untidy; at state_ids canary:100 it meant 100% of that endpoint's
+// requests produced no log line at all -- and since metrics carry no
+// per-origin label by design, "which server asked for this" was recorded
+// nowhere.
+//
+// The absences are asserted as tightly as the presences. upstream_ms and
+// backend describe a request to Synapse that never happened, and reporting
+// them as zero would be worse than omitting them: a zero upstream_ms reads as
+// an instant upstream rather than no upstream.
+func TestNativelyServedRequestIsLogged(t *testing.T) {
+	for _, endpointMode := range []config.Mode{
+		{Kind: config.ModeNative},
+		{Kind: config.ModeCanary, CanaryPercent: 100},
+	} {
+		t.Run(endpointMode.String(), func(t *testing.T) {
+			nativelyServedRequestIsLogged(t, endpointMode)
+		})
+	}
+}
+
+func nativelyServedRequestIsLogged(t *testing.T, endpointMode config.Mode) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be contacted in native mode")
+	}))
+	defer upstream.Close()
+
+	// Both modes that serve natively are covered. Under ModeNative alone the
+	// mode field is indistinguishable from the configured mode, so a
+	// regression to mode.String() would pass unnoticed; canary is where the
+	// two differ and where the field earns its keep, by making the served and
+	// proxied shares greppable apart.
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: endpointMode,
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &fakeResolver{resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}}}
+
+	var logs safeBuf
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.New(&logs),
+		WithNative(res, acceptingVerifier{}, 5*time.Second, 30*time.Second)))
+	defer front.Close()
+
+	status, _ := rawGet(t, front.Listener.Addr().String(),
+		"/_matrix/federation/v1/state_ids/%21r%3Aexample.com?event_id=%24evt",
+		`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 served natively", status)
+	}
+
+	// The response can reach the client before the handler writes its log
+	// line, so this is a race without a settling window.
+	var entry map[string]any
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, l := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			var d map[string]any
+			if json.Unmarshal([]byte(l), &d) == nil && d["message"] == "Served federation request" {
+				entry = d
+			}
+		}
+		if entry != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if entry == nil {
+		t.Fatalf("a natively served request produced no request log line; got:\n%s", logs.String())
+	}
+
+	for field, want := range map[string]any{
+		"mode":     "native",
+		"endpoint": "state_ids",
+		"status":   "200",
+		"origin":   "remote.example",
+	} {
+		if got := entry[field]; got != want {
+			t.Errorf("%s = %v, want %v", field, got, want)
+		}
+	}
+	for _, absent := range []string{"upstream_ms", "backend"} {
+		if v, ok := entry[absent]; ok {
+			t.Errorf("%s = %v; it describes an upstream request that never happened", absent, v)
+		}
+	}
+	for _, present := range []string{"bytes", "total_ms", "param"} {
+		if _, ok := entry[present]; !ok {
+			t.Errorf("%s missing from the log line", present)
+		}
 	}
 }

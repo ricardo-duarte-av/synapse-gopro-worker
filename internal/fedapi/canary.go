@@ -46,6 +46,19 @@ func sampled(mode config.Mode, key string) bool {
 	}
 }
 
+// nativeResult reports what the native path did.
+//
+// Status and Bytes exist so a natively served request can be logged like any
+// other. They have no meaning unless Served is true.
+type nativeResult struct {
+	Served bool
+	// Reason is why we fell back, when Served is false.
+	Reason string
+	Spent  time.Duration
+	Status int
+	Bytes  int64
+}
+
 // serveNative answers a request from our own implementation.
 //
 // It reports whether the request was answered. When it returns false nothing
@@ -53,9 +66,9 @@ func sampled(mode config.Mode, key string) bool {
 // whole safety property of a canary: any doubt costs latency, never
 // correctness. Nothing is written until a complete answer exists, so a failure
 // halfway through cannot leave a half-written response.
-func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode config.Mode, endpoint, roomID, eventID string) (served bool, reason string, spent time.Duration) {
+func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode config.Mode, endpoint, roomID, eventID string) nativeResult {
 	if h.resolver == nil {
-		return false, "no_resolver", 0
+		return nativeResult{Reason: "no_resolver"}
 	}
 	attemptStart := time.Now()
 
@@ -77,7 +90,7 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 	result := h.verifier.Verify(r)
 	if !result.OK() {
 		nativeFallback.WithLabelValues(endpoint, "auth_rejected").Inc()
-		return false, "auth_rejected", time.Since(attemptStart)
+		return nativeResult{Reason: "auth_rejected", Spent: time.Since(attemptStart)}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.nativeTimeout)
@@ -111,7 +124,7 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 			Str("reason", reason).
 			Dur("took", elapsed).
 			Msg("Native answer not served; falling back to Synapse")
-		return false, reason, time.Since(attemptStart)
+		return nativeResult{Reason: reason, Spent: time.Since(attemptStart)}
 	}
 
 	nativeDuration.WithLabelValues(endpoint).Observe(elapsed.Seconds())
@@ -142,7 +155,12 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 	if mode.Kind == config.ModeCanary {
 		h.compareServed(r, endpoint, roomID, eventID, body, status, elapsed)
 	}
-	return true, "", time.Since(attemptStart)
+	return nativeResult{
+		Served: true,
+		Spent:  time.Since(attemptStart),
+		Status: status,
+		Bytes:  int64(len(body)),
+	}
 }
 
 // compareServed asks Synapse what it would have answered, and records any

@@ -222,14 +222,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Msg("Rate limited: delayed request")
 		}
 
-		served, reason, spent := h.serveNative(w, r, mode, endpointName, roomID, eventID)
+		nat := h.serveNative(w, r, mode, endpointName, roomID, eventID)
 		release()
-		if served {
+		if nat.Served {
 			metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "native").Inc()
+
+			// Logged here because the request ends here: the shared log below
+			// runs after the proxy forward, so until now everything we
+			// answered ourselves was invisible. That was tolerable while
+			// native traffic was a rounding error and is not once an endpoint
+			// is promoted -- metrics deliberately carry no per-origin label,
+			// so this line is the only place "which server asked" is recorded.
+			//
+			// No upstream was involved, so upstream_ms and backend are
+			// omitted rather than reported as zero. mode is "native" because
+			// it describes what happened to *this* request; under canary the
+			// proxied share still logs the configured mode, which makes the
+			// two shares greppable apart.
+			h.log.Info().
+				Str("endpoint", endpointName).
+				Str("param", route.Param).
+				Str("mode", config.ModeNative).
+				Str("status", strconv.Itoa(nat.Status)).
+				Int64("bytes", nat.Bytes).
+				Dur("total_ms", time.Since(start)).
+				Str("origin", origin).
+				Msg("Served federation request")
 			return
 		}
 		nativeFallbackServed.WithLabelValues(endpointName).Inc()
-		fellBack, fallbackReason, nativeSpent = true, reason, spent
+		fellBack, fallbackReason, nativeSpent = true, nat.Reason, nat.Spent
 	}
 
 	// Shadowing continues through canary, on the share still going to Synapse.

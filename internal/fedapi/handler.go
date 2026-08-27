@@ -1,7 +1,9 @@
 package fedapi
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
@@ -157,6 +159,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	roomID := roomIDFor(route)
 	eventID := eventIDFor(route, r)
 
+	// Endpoints whose answer depends on the request body need it buffered.
+	//
+	// Three separate consumers read it and each one would otherwise leave the
+	// stream empty for the next: mautrix's Authenticate reads it to verify the
+	// signature (which covers the content), the native path parses it, and the
+	// proxy forwards it on fallback. mautrix restores the body on the request
+	// it *returns*, which Verify discards -- harmless while every endpoint was
+	// a GET, and silently fatal for the first POST.
+	var reqBody []byte
+	if route.Endpoint.HasRequestBody() && r.Body != nil {
+		var err error
+		reqBody, err = io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
+		_ = r.Body.Close()
+		if err != nil {
+			metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "400").Inc()
+			http.Error(w, `{"errcode":"M_NOT_JSON","error":"Could not read request body."}`, http.StatusBadRequest)
+			return
+		}
+		if int64(len(reqBody)) > maxRequestBody {
+			metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "413").Inc()
+			http.Error(w, `{"errcode":"M_TOO_LARGE","error":"Request body too large."}`, http.StatusRequestEntityTooLarge)
+			return
+		}
+		restoreBody(r, reqBody)
+	}
+
 	// Tracked so a fallback can be accounted for end to end: the client pays
 	// our attempt plus Synapse's, and until now the second half was invisible.
 	var (
@@ -223,7 +251,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Msg("Rate limited: delayed request")
 		}
 
-		nat := h.serveNative(w, r, mode, endpointName, roomID, eventID)
+		nat := h.serveNative(w, r, mode, endpointName, roomID, eventID, reqBody)
 		release()
 		if nat.Served {
 			metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "native").Inc()
@@ -317,6 +345,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		capture = h.captureLimit
 	}
 
+	// Verification consumed the buffered body; the proxy needs it again.
+	restoreBody(r, reqBody)
+
 	var res proxy.Result
 	if sink != nil {
 		res = h.proxy.ForwardStreaming(w, r, sink.Writer())
@@ -348,6 +379,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				URI:        r.URL.RequestURI(),
 				Method:     r.Method,
 				AuthHeader: r.Header.Get("Authorization"),
+				Body:       reqBody,
 			},
 			shadow.ProxyResult{
 				Status:   res.Status,
@@ -454,4 +486,21 @@ func (h *Handler) modeFor(e Endpoint) config.Mode {
 	default:
 		return config.Mode{Kind: config.ModeProxy}
 	}
+}
+
+// maxRequestBody bounds a buffered request body.
+//
+// /get_missing_events carries two event-ID lists and a limit; Synapse caps the
+// limit at 20 but places no bound on earliest_events, so a remote server could
+// send a very large list. One megabyte is far beyond any legitimate request and
+// well below anything that threatens the process.
+const maxRequestBody = 1 << 20
+
+// restoreBody makes a buffered body readable again for the next consumer.
+func restoreBody(r *http.Request, body []byte) {
+	if body == nil {
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
 }

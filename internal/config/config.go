@@ -238,6 +238,9 @@ type Endpoints struct {
 	Event    Mode `yaml:"event"`
 	State    Mode `yaml:"state"`
 	StateIDs Mode `yaml:"state_ids"`
+	// GetMissingEvents reuses /event's visibility filtering and every cache,
+	// so it is the cheapest endpoint to add once the three pillars are done.
+	GetMissingEvents Mode `yaml:"get_missing_events"`
 }
 
 // Log configures logging.
@@ -263,9 +266,10 @@ func parse(data []byte) (*Config, error) {
 		Metrics: Metrics{Addr: ":9200"},
 		Log:     Log{Level: "info"},
 		Endpoints: Endpoints{
-			Event:    Mode{Kind: ModeProxy},
-			State:    Mode{Kind: ModeProxy},
-			StateIDs: Mode{Kind: ModeProxy},
+			Event:            Mode{Kind: ModeProxy},
+			State:            Mode{Kind: ModeProxy},
+			StateIDs:         Mode{Kind: ModeProxy},
+			GetMissingEvents: Mode{Kind: ModeProxy},
 		},
 	}
 
@@ -358,9 +362,10 @@ func (c *Config) validate() error {
 // ByName maps each endpoint to its configured mode.
 func (e Endpoints) ByName() map[string]Mode {
 	return map[string]Mode{
-		"event":     e.Event,
-		"state":     e.State,
-		"state_ids": e.StateIDs,
+		"event":              e.Event,
+		"state":              e.State,
+		"state_ids":          e.StateIDs,
+		"get_missing_events": e.GetMissingEvents,
 	}
 }
 

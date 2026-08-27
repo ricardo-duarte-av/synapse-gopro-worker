@@ -31,6 +31,7 @@ import (
 type Resolver interface {
 	StateIDs(ctx context.Context, origin, roomID, eventID string) (*matrixstate.StateIDsResponse, error)
 	Event(ctx context.Context, origin, serverName, eventID string) (*matrixstate.TransactionResponse, error)
+	GetMissingEvents(ctx context.Context, origin, serverName, roomID string, earliest, latest []string, limit int) (*matrixstate.MissingEventsResponse, error)
 	State(ctx context.Context, w io.Writer, origin, roomID, eventID string) (matrixstate.StateResult, error)
 }
 
@@ -40,6 +41,21 @@ type Request struct {
 	Origin   string
 	RoomID   string
 	EventID  string
+	// Body is the raw request body, for endpoints whose answer depends on it.
+	// Carried as bytes rather than parsed so the shadow comparator and the
+	// request path parse it identically.
+	Body []byte
+}
+
+// MissingEventsRequest is the POST body of /get_missing_events.
+//
+// Synapse defaults limit to 10 and the lists to empty, and caps the limit at
+// 20 inside the handler. A body that will not parse is a client error, not an
+// internal one.
+type MissingEventsRequest struct {
+	EarliestEvents []string `json:"earliest_events"`
+	LatestEvents   []string `json:"latest_events"`
+	Limit          *int     `json:"limit"`
 }
 
 // Answer computes one response.
@@ -48,10 +64,10 @@ type Request struct {
 // statuses; err is reserved for failures that mean we could not produce an
 // answer at all, which on the request path is what triggers falling back to
 // the proxy.
-func Answer(ctx context.Context, r Resolver, serverName string, req Request) (body []byte, status int, err error) {
-	switch req.Endpoint {
+func Answer(ctx context.Context, r Resolver, serverName string, request Request) (body []byte, status int, err error) {
+	switch request.Endpoint {
 	case "state_ids":
-		resp, err := r.StateIDs(ctx, req.Origin, req.RoomID, req.EventID)
+		resp, err := r.StateIDs(ctx, request.Origin, request.RoomID, request.EventID)
 		if err != nil {
 			return matrixError(err)
 		}
@@ -61,8 +77,30 @@ func Answer(ctx context.Context, r Resolver, serverName string, req Request) (bo
 		}
 		return body, http.StatusOK, nil
 
+	case "get_missing_events":
+		var body MissingEventsRequest
+		if len(request.Body) > 0 {
+			if err := json.Unmarshal(request.Body, &body); err != nil {
+				return matrixError(matrixstate.ErrBadJSON())
+			}
+		}
+		limit := 10
+		if body.Limit != nil {
+			limit = *body.Limit
+		}
+		resp, err := r.GetMissingEvents(ctx, request.Origin, serverName, request.RoomID,
+			body.EarliestEvents, body.LatestEvents, limit)
+		if err != nil {
+			return matrixError(err)
+		}
+		out, err := json.Marshal(resp)
+		if err != nil {
+			return nil, 0, err
+		}
+		return out, http.StatusOK, nil
+
 	case "event":
-		resp, err := r.Event(ctx, req.Origin, serverName, req.EventID)
+		resp, err := r.Event(ctx, request.Origin, serverName, request.EventID)
 		if errors.Is(err, matrixstate.ErrEventNotFound) {
 			// Synapse answers an unknown event with 404 and an empty body,
 			// not a JSON error.
@@ -77,7 +115,7 @@ func Answer(ctx context.Context, r Resolver, serverName string, req Request) (bo
 		}
 		return body, http.StatusOK, nil
 	}
-	return nil, 0, fmt.Errorf("native: no implementation for %q", req.Endpoint)
+	return nil, 0, fmt.Errorf("native: no implementation for %q", request.Endpoint)
 }
 
 // matrixError turns a Matrix error into the body and status it is served with,

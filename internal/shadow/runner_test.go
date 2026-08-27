@@ -328,3 +328,10 @@ func (f *fakeResolver) State(ctx context.Context, w io.Writer, origin, roomID, e
 	}
 	return matrixstate.StateResult{}, errors.New("fakeResolver: State not configured")
 }
+
+// GetMissingEvents satisfies native.Resolver. Not exercised by these tests; a
+// fake returning an empty result would let a test claiming to cover the
+// endpoint pass without doing anything.
+func (f *fakeResolver) GetMissingEvents(ctx context.Context, origin, serverName, roomID string, earliest, latest []string, limit int) (*matrixstate.MissingEventsResponse, error) {
+	return nil, errors.New("fakeResolver: GetMissingEvents not configured")
+}

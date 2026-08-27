@@ -206,7 +206,7 @@ func TestNativeAnswerContainsFailures(t *testing.T) {
 
 	t.Run("panic becomes an error", func(t *testing.T) {
 		h.resolver = &fakeResolver{panic: true}
-		body, status, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e")
+		body, status, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e", nil)
 		if err == nil {
 			t.Fatal("a panic did not become an error, so it would escape into the HTTP server")
 		}
@@ -217,7 +217,7 @@ func TestNativeAnswerContainsFailures(t *testing.T) {
 
 	t.Run("resolver error propagates", func(t *testing.T) {
 		h.resolver = &fakeResolver{err: errors.New("db is down")}
-		if _, _, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e"); err == nil {
+		if _, _, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e", nil); err == nil {
 			t.Error("a resolver error was swallowed, so the caller would serve an empty answer")
 		}
 	})
@@ -227,7 +227,7 @@ func TestNativeAnswerContainsFailures(t *testing.T) {
 		// rather than treated as a reason to fall back.
 		h.resolver = &fakeResolver{err: &matrixstate.MatrixError{
 			Status: 403, ErrCode: "M_FORBIDDEN", Message: "Host not in room."}}
-		body, status, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e")
+		body, status, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e", nil)
 		if err != nil {
 			t.Fatalf("a Matrix error was treated as a failure: %v", err)
 		}
@@ -1054,5 +1054,21 @@ func TestStateIsComparedByDigest(t *testing.T) {
 				t.Error("identical responses were recorded as a mismatch")
 			}
 		})
+	}
+}
+
+// GetMissingEvents satisfies native.Resolver. Not exercised by these tests; a
+// fake returning an empty result would let a test claiming to cover the
+// endpoint pass without doing anything.
+func (f *fakeResolver) GetMissingEvents(ctx context.Context, origin, serverName, roomID string, earliest, latest []string, limit int) (*matrixstate.MissingEventsResponse, error) {
+	return nil, errors.New("fakeResolver: GetMissingEvents not configured")
+}
+
+func (s *slowResolver) GetMissingEvents(ctx context.Context, origin, serverName, roomID string, earliest, latest []string, limit int) (*matrixstate.MissingEventsResponse, error) {
+	select {
+	case <-time.After(s.delay):
+		return &matrixstate.MissingEventsResponse{}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }

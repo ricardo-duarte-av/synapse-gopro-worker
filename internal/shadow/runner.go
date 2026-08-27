@@ -35,6 +35,8 @@ type Request struct {
 	// it inline would delay the response we are supposed to be observing.
 	Method     string
 	AuthHeader string
+	// Body is the request body for endpoints whose answer depends on it.
+	Body []byte
 }
 
 // ProxyResult is what Synapse answered.
@@ -231,7 +233,11 @@ func (r *Runner) finish(req Request, proxy ProxyResult, elapsed time.Duration, n
 		return
 	}
 
-	diff, diffErr := r.diff(req.Endpoint, proxy.Body, nativeBody)
+	diff, skipReason, diffErr := r.diff(req, proxy.Body, nativeBody)
+	if skipReason != "" {
+		shadowSkipped.WithLabelValues(req.Endpoint, skipReason).Inc()
+		return
+	}
 	if diffErr != nil {
 		r.record(req, proxy, elapsed, &difflog.Record{
 			Kind:         difflog.KindNativeError,
@@ -367,17 +373,27 @@ func (r *Runner) compute(ctx context.Context, req Request, origin string) ([]byt
 		Origin:   origin,
 		RoomID:   req.RoomID,
 		EventID:  req.EventID,
+		Body:     req.Body,
 	})
 }
 
-func (r *Runner) diff(endpoint string, synapseBody, nativeBody []byte) (*difflog.Diff, error) {
-	switch endpoint {
+// diff compares two answers, and may report that they are not comparable.
+//
+// The skip reason exists for /get_missing_events, where a walk that stopped at
+// the limit has no single correct answer. Returning it here rather than
+// letting the endpoint fake a match keeps "we agree" meaning what it says.
+func (r *Runner) diff(req Request, synapseBody, nativeBody []byte) (*difflog.Diff, string, error) {
+	switch req.Endpoint {
 	case "state_ids":
-		return CompareStateIDs(synapseBody, nativeBody)
+		d, err := CompareStateIDs(synapseBody, nativeBody)
+		return d, "", err
 	case "event":
-		return CompareEvent(synapseBody, nativeBody)
+		d, err := CompareEvent(synapseBody, nativeBody)
+		return d, "", err
+	case "get_missing_events":
+		return CompareGetMissingEvents(req.Body, synapseBody, nativeBody)
 	default:
-		return nil, errors.New("shadow: no comparator for " + endpoint)
+		return nil, "", errors.New("shadow: no comparator for " + req.Endpoint)
 	}
 }
 

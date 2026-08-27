@@ -1,6 +1,9 @@
 package matrixstate
 
-import "fmt"
+import (
+	"fmt"
+	"net/http"
+)
 
 // MatrixError is a Matrix API error with the status and body Synapse would
 // return. The wording is copied from Synapse deliberately: while the native
@@ -55,5 +58,14 @@ func errStateNotKnown(eventID string) *MatrixError {
 		Status:  404,
 		ErrCode: "M_NOT_FOUND",
 		Message: fmt.Sprintf("State not known at event %s", eventID),
+	}
+}
+
+// ErrBadJSON is Synapse's answer to a request body it cannot parse.
+func ErrBadJSON() *MatrixError {
+	return &MatrixError{
+		Status:  http.StatusBadRequest,
+		ErrCode: "M_NOT_JSON",
+		Message: "Content not JSON.",
 	}
 }

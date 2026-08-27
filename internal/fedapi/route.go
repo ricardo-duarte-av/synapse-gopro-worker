@@ -10,8 +10,18 @@ const (
 	EndpointEvent    Endpoint = "event"
 	EndpointState    Endpoint = "state"
 	EndpointStateIDs Endpoint = "state_ids"
-	EndpointUnknown  Endpoint = "unknown"
+	// EndpointGetMissingEvents is the first POST endpoint here, and the first
+	// whose request carries a body the answer depends on.
+	EndpointGetMissingEvents Endpoint = "get_missing_events"
+	EndpointUnknown          Endpoint = "unknown"
 )
+
+// HasRequestBody reports whether an endpoint's answer depends on the request
+// body, which must then be buffered so that verification, the native answer
+// and the proxy can each read it.
+func (e Endpoint) HasRequestBody() bool {
+	return e == EndpointGetMissingEvents
+}
 
 // Route describes a matched federation request.
 type Route struct {
@@ -34,6 +44,7 @@ var prefixes = []struct {
 	{"/_matrix/federation/v1/state_ids/", EndpointStateIDs},
 	{"/_matrix/federation/v1/state/", EndpointState},
 	{"/_matrix/federation/v1/event/", EndpointEvent},
+	{"/_matrix/federation/v1/get_missing_events/", EndpointGetMissingEvents},
 }
 
 // Match classifies an escaped request path. It reports false for anything

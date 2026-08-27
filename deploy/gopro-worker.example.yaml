@@ -130,6 +130,16 @@ endpoints:
   # state_ids has a native implementation. Shadow mode still serves Synapse's
   # answer; it only also computes our own and records any disagreement.
   state_ids: proxy
+  # get_missing_events reuses /event's visibility filtering and every cache, so
+  # it costs almost nothing to add. It is the only POST endpoint here: its
+  # answer depends on the request body, which is buffered so verification, the
+  # native path and the proxy can each read it.
+  #
+  # Note that a walk which stops at the limit has no single correct answer --
+  # which events survive depends on an iteration order neither side controls --
+  # so those comparisons are recorded as
+  # shadow_skipped{reason="walk_truncated"} rather than counted either way.
+  get_missing_events: proxy
 
 # X-Matrix request verification.
 #

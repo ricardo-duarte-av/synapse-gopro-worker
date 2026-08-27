@@ -1,9 +1,11 @@
 package fedapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"hash/fnv"
+	"io"
 	"net/http"
 	"time"
 
@@ -66,7 +68,7 @@ type nativeResult struct {
 // whole safety property of a canary: any doubt costs latency, never
 // correctness. Nothing is written until a complete answer exists, so a failure
 // halfway through cannot leave a half-written response.
-func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode config.Mode, endpoint, roomID, eventID string) nativeResult {
+func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode config.Mode, endpoint, roomID, eventID string, reqBody []byte) nativeResult {
 	if h.resolver == nil {
 		return nativeResult{Reason: "no_resolver"}
 	}
@@ -97,7 +99,7 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 	defer cancel()
 
 	start := time.Now()
-	body, status, err := h.answer(ctx, endpoint, result.Origin, roomID, eventID)
+	body, status, err := h.answer(ctx, endpoint, result.Origin, roomID, eventID, reqBody)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -153,7 +155,7 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 	// evidence has to be gathered before promotion, because afterwards it
 	// stops arriving.
 	if mode.Kind == config.ModeCanary {
-		h.compareServed(r, endpoint, roomID, eventID, body, status, elapsed)
+		h.compareServed(r, endpoint, roomID, eventID, reqBody, body, status, elapsed)
 	}
 	spent := time.Since(attemptStart)
 	nativeRequestDuration.WithLabelValues(endpoint).Observe(spent.Seconds())
@@ -171,13 +173,19 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 //
 // The request is cloned onto a detached context: the original is cancelled the
 // moment the handler returns, and this deliberately runs after that.
-func (h *Handler) compareServed(r *http.Request, endpoint, roomID, eventID string, body []byte, status int, elapsed time.Duration) {
+func (h *Handler) compareServed(r *http.Request, endpoint, roomID, eventID string, reqBody, body []byte, status int, elapsed time.Duration) {
 	if h.shadow == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.verifyTimeout)
 	replay := r.Clone(ctx)
+	// The replay must carry the same body, or a POST endpoint is verified
+	// against an answer Synapse computed for a different request.
 	replay.Body = http.NoBody
+	if len(reqBody) > 0 {
+		replay.Body = io.NopCloser(bytes.NewReader(reqBody))
+		replay.ContentLength = int64(len(reqBody))
+	}
 
 	go func() {
 		defer cancel()
@@ -211,7 +219,7 @@ func (h *Handler) compareServed(r *http.Request, endpoint, roomID, eventID strin
 
 // answer computes the response, converting a panic into an error so a bug in
 // the native path falls back to the proxy rather than killing the connection.
-func (h *Handler) answer(ctx context.Context, endpoint, origin, roomID, eventID string) (body []byte, status int, err error) {
+func (h *Handler) answer(ctx context.Context, endpoint, origin, roomID, eventID string, reqBody []byte) (body []byte, status int, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			nativeFallback.WithLabelValues(endpoint, "panic").Inc()
@@ -225,6 +233,7 @@ func (h *Handler) answer(ctx context.Context, endpoint, origin, roomID, eventID 
 		Origin:   origin,
 		RoomID:   roomID,
 		EventID:  eventID,
+		Body:     reqBody,
 	})
 }
 

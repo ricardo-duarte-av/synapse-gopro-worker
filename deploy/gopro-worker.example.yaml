@@ -246,6 +246,11 @@ shadow:
 
 log:
   level: info
+  # Human-readable coloured console output instead of JSON.
+  #
+  # Worth turning on when watching `docker logs`; leave it off if anything
+  # downstream parses the log, since the pretty writer is for eyes only. The
+  # colours are ANSI escapes, which Docker passes through unchanged.
   pretty: false
 
 # Where shadow-mode disagreements with Synapse are recorded.

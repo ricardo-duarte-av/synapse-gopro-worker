@@ -7,11 +7,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"sort"
 	"syscall"
 	"time"
@@ -114,12 +116,17 @@ func run() error {
 		return err
 	}
 
-	log.Info().
+	// Endpoints are read from the config rather than listed here. The
+	// hand-written version silently omitted get_missing_events the moment it
+	// was added, which is the one line an operator reads to confirm what the
+	// worker is actually doing.
+	startup := log.Info().
 		Str("server_name", cfg.ServerName).
-		Strs("upstreams", p.Backends()).
-		Str("event", cfg.Endpoints.Event.String()).
-		Str("state", cfg.Endpoints.State.String()).
-		Str("state_ids", cfg.Endpoints.StateIDs.String()).
+		Strs("upstreams", p.Backends())
+	for _, name := range slices.Sorted(maps.Keys(cfg.Endpoints.ByName())) {
+		startup = startup.Str(name, cfg.Endpoints.ByName()[name].String())
+	}
+	startup.
 		Str("diff_log", cfg.DiffLog.Dir).
 		Str("version", tag).
 		Msg("Starting gopro-worker")
@@ -336,7 +343,18 @@ func newLogger(cfg config.Log) (zerolog.Logger, error) {
 	var w = os.Stdout
 	logger := zerolog.New(w).Level(level).With().Timestamp().Logger()
 	if cfg.Pretty {
-		logger = logger.Output(zerolog.ConsoleWriter{Out: w, TimeFormat: time.RFC3339})
+		logger = logger.Output(zerolog.ConsoleWriter{
+			Out: w,
+			// Time only: the date is in the container log's own timestamps and
+			// every line here is from the same day as the one above it.
+			TimeFormat: "15:04:05",
+			// The fields an operator scans for first, in the order they are
+			// usually wanted. Anything not listed still prints, after these.
+			FieldsOrder: []string{
+				"endpoint", "mode", "status", "origin", "room_id", "event_id",
+				"total_ms", "upstream_ms", "bytes", "reason", "kind",
+			},
+		})
 	}
 	return logger, nil
 }

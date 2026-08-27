@@ -31,8 +31,23 @@ func Equal(synapse, native json.RawMessage) bool {
 // age as "now minus age_ts" at serialisation time, so the two sides compute it
 // milliseconds apart and can never match by value.
 func normalise(raw json.RawMessage) (map[string]any, bool) {
+	// Decoded with UseNumber so integers survive as their literal text.
+	//
+	// Plain json.Unmarshal into `any` makes every number a float64, which is
+	// exact only up to 2^53. Above that it silently rounds: depth
+	// 9007199254740993 becomes 9007199254740992, so two events with genuinely
+	// different depths compared *equal* and a real disagreement would have
+	// been reported as a match. This deployment holds 31 events in that range
+	// -- the artefacts of an attack on one room -- and depth is not decorative
+	// there: it decides whether /state serves an event at all.
+	//
+	// The failure direction is what kept it invisible. It could only ever hide
+	// a mismatch, never invent one, so nothing in the metrics or the diff log
+	// would have pointed at it.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var ev map[string]any
-	if err := json.Unmarshal(raw, &ev); err != nil {
+	if err := dec.Decode(&ev); err != nil {
 		return nil, false
 	}
 	if unsigned, ok := ev["unsigned"].(map[string]any); ok {

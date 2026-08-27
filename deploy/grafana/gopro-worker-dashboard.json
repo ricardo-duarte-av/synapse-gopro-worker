@@ -1917,8 +1917,8 @@
     {
       "id": 13,
       "type": "stat",
-      "title": "prev_content emitted",
-      "description": "PDUs we served on /state carrying prev_content or prev_sender. get_persisted_pdu does not load these, so a non-zero count means stored JSON carried a field federation should not see. This is the half of the cache-pollution check a digest cannot do -- Canonical drops those fields from both sides, so the comparator can no longer tell 'Synapse emitted them' from 'we did'. Expected to stay at zero.",
+      "title": "Digest blind spots",
+      "description": "PDUs served on /state carrying prev_content or prev_sender. Not defects: both fields are in Synapse's unsigned allowlist, remote servers send them and Synapse stores them verbatim -- 9,300 events across 158 rooms here. Both sides serve them identically.\n\nWhat this counts is how often the digest compares blind. Canonical drops these fields from both sides, because a digest cannot apply a tolerance asymmetrically the way Equal does, so for every PDU counted here a disagreement about those two fields would not have been caught. Read a clean /state match rate against this number rather than on its own.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

@@ -293,6 +293,20 @@ var persistedUnsignedFields = []string{
 // struct unconditionally, so an event with nothing to report still carries
 // "unsigned": {}.
 func applyPDUJSONRules(body []byte, nowMS int64) ([]byte, error) {
+	return applyPDUJSONRulesAt(body, &nowMS)
+}
+
+// applyPDUJSONRulesAt is applyPDUJSONRules with an optional clock, mirroring
+// get_pdu_json's Option<i64> time_now.
+//
+// A nil clock skips the age_ts -> age conversion entirely, keeping age_ts as
+// stored. This is not a refinement: /state reaches get_pdu_json through
+// serialize_and_filter_pdus, which passes time_now=None, while /event reaches
+// it through _transaction_dict_from_pdus, which passes a real clock. So the
+// two endpoints serialise the same event differently, and roughly half the
+// events here carry age_ts. redacted_because is dropped either way, since it
+// is not part of the unsigned allowlist.
+func applyPDUJSONRulesAt(body []byte, nowMS *int64) ([]byte, error) {
 	var ev struct {
 		Unsigned map[string]json.RawMessage `json:"unsigned"`
 	}
@@ -307,10 +321,10 @@ func applyPDUJSONRules(body []byte, nowMS int64) ([]byte, error) {
 		}
 	}
 
-	if raw, ok := unsigned["age_ts"]; ok {
+	if raw, ok := unsigned["age_ts"]; ok && nowMS != nil {
 		var ageTS int64
 		if err := json.Unmarshal(raw, &ageTS); err == nil {
-			age, err := json.Marshal(nowMS - ageTS)
+			age, err := json.Marshal(*nowMS - ageTS)
 			if err != nil {
 				return nil, err
 			}

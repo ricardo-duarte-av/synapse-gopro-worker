@@ -2,6 +2,8 @@ package shadow
 
 import (
 	"context"
+	"errors"
+	"io"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -314,4 +316,15 @@ func TestCompareServedRecordsBothLatencies(t *testing.T) {
 		t.Errorf("Synapse's latency observed %d times, want 1: without it a "+
 			"promoted endpoint cannot be compared against the thing it replaced", got)
 	}
+}
+
+// State satisfies native.Resolver. /state is not exercised by these tests; a
+// fake that silently returned an empty result would let a test claiming to
+// cover it pass without doing anything.
+func (f *fakeResolver) State(ctx context.Context, w io.Writer, origin, roomID, eventID string) (matrixstate.StateResult, error) {
+	f.calls.Add(1)
+	if f.panic {
+		panic("boom")
+	}
+	return matrixstate.StateResult{}, errors.New("fakeResolver: State not configured")
 }

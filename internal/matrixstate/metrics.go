@@ -16,3 +16,15 @@ var authChainFallbacks = promauto.NewCounter(prometheus.CounterOpts{
 	Name:      "auth_chain_index_fallback_total",
 	Help:      "Auth chains computed by recursive walk because the chain cover index was incomplete.",
 })
+
+// statePrevContentEmitted counts PDUs we served on /state carrying
+// prev_content or prev_sender.
+//
+// The digest drops those fields symmetrically, so the comparator can no longer
+// tell "Synapse emitted them" from "we did". This recovers the half that
+// matters: get_persisted_pdu does not load them, so if we emit them the field
+// came from stored JSON and is worth explaining. Expected to stay at zero.
+var statePrevContentEmitted = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "gopro_state_prev_content_emitted_total",
+	Help: "PDUs served on /state carrying prev_content or prev_sender, which get_persisted_pdu would not load.",
+})

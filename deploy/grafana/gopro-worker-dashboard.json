@@ -979,12 +979,147 @@
       ]
     },
     {
+      "id": 17,
+      "type": "stat",
+      "title": "Upstream requests skipped",
+      "description": "Requests never forwarded because the client had already hung up -- work Synapse is spared, roughly 2.55s of its database time each on /state_ids. Deliberately separate from the cancelled-request count: a request cancelled after we forwarded is not work avoided.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 6,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gopro_upstream_skipped_total{job=~\"$job\"}[$__range]))",
+          "legendFormat": "Upstream requests skipped",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Clients that went away",
+      "description": "Remote servers hanging up. Routine for federation traffic and not a fault here -- Tuwunel-style servers hang up on /state_ids constantly -- but a sharp rise means something changed in how long we take to answer.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 30,
+        "w": 18,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (endpoint) (rate(gopro_upstream_skipped_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
+          "legendFormat": "{{endpoint}} skipped",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (endpoint) (rate(gopro_requests_total{endpoint=~\"$endpoint\", job=~\"$job\", status=\"canceled\"}[$bucket]))",
+          "legendFormat": "{{endpoint}} cancelled",
+          "range": true,
+          "refId": "B"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Shadow comparison",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 35,
         "w": 24,
         "h": 1
       },
@@ -1000,7 +1135,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 36,
         "w": 4,
         "h": 4
       },
@@ -1070,7 +1205,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 31,
+        "y": 36,
         "w": 4,
         "h": 4
       },
@@ -1131,7 +1266,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 31,
+        "y": 36,
         "w": 4,
         "h": 4
       },
@@ -1196,7 +1331,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 31,
+        "y": 36,
         "w": 4,
         "h": 4
       },
@@ -1265,7 +1400,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 31,
+        "y": 36,
         "w": 4,
         "h": 4
       },
@@ -1330,7 +1465,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 31,
+        "y": 36,
         "w": 4,
         "h": 4
       },
@@ -1395,7 +1530,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 35,
+        "y": 40,
         "w": 12,
         "h": 8
       },
@@ -1460,7 +1595,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 35,
+        "y": 40,
         "w": 12,
         "h": 8
       },
@@ -1523,7 +1658,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 43,
+        "y": 48,
         "w": 24,
         "h": 9
       },
@@ -1620,7 +1755,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 52,
+        "y": 57,
         "w": 12,
         "h": 8
       },
@@ -1674,7 +1809,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 52,
+        "y": 57,
         "w": 12,
         "h": 8
       },
@@ -1719,12 +1854,262 @@
       ]
     },
     {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Comparison outcomes by kind",
+      "description": "What comparisons concluded, not just match-versus-not. body_mismatch is a content disagreement; status_mismatch means the sides returned different HTTP statuses; native_error and native_timeout mean we could not produce an answer at all, which on the request path would have been a fallback. The series existed long before this panel: the dashboard could show that a mismatch happened but not what kind it was.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 65,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (endpoint, result) (rate(gopro_shadow_results_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
+          "legendFormat": "{{endpoint}} {{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "prev_content emitted",
+      "description": "PDUs we served on /state carrying prev_content or prev_sender. get_persisted_pdu does not load these, so a non-zero count means stored JSON carried a field federation should not see. This is the half of the cache-pollution check a digest cannot do -- Canonical drops those fields from both sides, so the comparator can no longer tell 'Synapse emitted them' from 'we did'. Expected to stay at zero.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 65,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gopro_state_prev_content_emitted_total{job=~\"$job\"}[$__range]))",
+          "legendFormat": "prev_content emitted",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Expired remote keys",
+      "description": "Origins that presented a valid-looking but expired key. mautrix verifies the self-signature without checking valid_until_ts on a freshly fetched response, so this check is ours. Non-zero means remote servers with broken key servers, not a fault here.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 65,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gopro_auth_expired_key_total{job=~\"$job\"}[$__range]))",
+          "legendFormat": "Expired remote keys",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "Soaking since",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "How long the accumulated comparison evidence covers. The cumulative mismatch ratio never clears by design, so it is only meaningful against this: a ratio computed over a soak that began before a fix landed says nothing about the code running now. Read it alongside 'Time since last mismatch', which is the number that actually matters.",
+      "gridPos": {
+        "x": 20,
+        "y": 65,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "time() - min(gopro_shadow_since_timestamp_seconds{job=~\"$job\"})",
+          "legendFormat": "Soaking since",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Canary (answers we served)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 60,
+        "y": 73,
         "w": 24,
         "h": 1
       },
@@ -1740,7 +2125,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 61,
+        "y": 74,
         "w": 4,
         "h": 4
       },
@@ -1802,7 +2187,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 61,
+        "y": 74,
         "w": 4,
         "h": 4
       },
@@ -1872,7 +2257,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 61,
+        "y": 74,
         "w": 4,
         "h": 4
       },
@@ -1938,7 +2323,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 61,
+        "y": 74,
         "w": 12,
         "h": 8
       },
@@ -1992,7 +2377,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 78,
         "w": 12,
         "h": 4
       },
@@ -2059,13 +2444,150 @@
       ]
     },
     {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Fallback outcome at Synapse",
+      "description": "What happened at Synapse for requests we gave up on -- the question these metrics were added to answer. Without it a fallback was invisible past the moment it happened, because the upstream histogram covers every request and cannot isolate the abandoned one. upstream=canceled means the remote server had already gone, which on this deployment is the common case rather than the rare one.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 82,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (endpoint, reason, upstream) (increase(gopro_native_fallback_upstream_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
+          "legendFormat": "{{endpoint}} {{reason}} to {{upstream}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "What a fallback cost the client",
+      "description": "End-to-end time for a request that fell back: our attempt plus Synapse's, in series. This is why the serving budget is 5s rather than the shadow timeout's 30s -- the whole budget is spent before Synapse is even asked.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 82,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, reason) (rate(gopro_native_fallback_total_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__range])))",
+          "legendFormat": "p50 {{reason}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, reason) (rate(gopro_native_fallback_total_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__range])))",
+          "legendFormat": "p99 {{reason}}",
+          "range": true,
+          "refId": "B"
+        }
+      ]
+    },
+    {
       "id": 1,
       "type": "row",
       "title": "Native performance (answers we served)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 69,
+        "y": 90,
         "w": 24,
         "h": 1
       },
@@ -2082,7 +2604,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 70,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2144,7 +2666,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 70,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2206,7 +2728,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 70,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2268,7 +2790,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 70,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2330,7 +2852,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 70,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2392,7 +2914,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 70,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2455,7 +2977,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 74,
+        "y": 95,
         "w": 12,
         "h": 8
       },
@@ -2543,7 +3065,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 74,
+        "y": 95,
         "w": 12,
         "h": 8
       },
@@ -2642,7 +3164,7 @@
       "description": "Full spread of what remote servers waited for. A bimodal picture means cache hits and misses are resolving very differently -- expected on /state_ids, where a cold large room is orders of magnitude slower than a warm one.",
       "gridPos": {
         "x": 0,
-        "y": 82,
+        "y": 103,
         "w": 12,
         "h": 8
       },
@@ -2694,7 +3216,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 82,
+        "y": 103,
         "w": 12,
         "h": 8
       },
@@ -2762,7 +3284,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 90,
+        "y": 111,
         "w": 24,
         "h": 1
       },
@@ -2778,7 +3300,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 91,
+        "y": 112,
         "w": 4,
         "h": 4
       },
@@ -2848,7 +3370,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 91,
+        "y": 112,
         "w": 4,
         "h": 4
       },
@@ -2910,7 +3432,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 91,
+        "y": 112,
         "w": 4,
         "h": 4
       },
@@ -2971,7 +3493,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 91,
+        "y": 112,
         "w": 4,
         "h": 4
       },
@@ -3032,7 +3554,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 91,
+        "y": 112,
         "w": 4,
         "h": 4
       },
@@ -3094,7 +3616,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 91,
+        "y": 112,
         "w": 4,
         "h": 4
       },
@@ -3164,7 +3686,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 95,
+        "y": 116,
         "w": 12,
         "h": 8
       },
@@ -3238,7 +3760,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 95,
+        "y": 116,
         "w": 12,
         "h": 8
       },
@@ -3308,7 +3830,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 104,
+        "y": 125,
         "w": 24,
         "h": 1
       },
@@ -3324,7 +3846,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 105,
+        "y": 126,
         "w": 5,
         "h": 4
       },
@@ -3394,7 +3916,7 @@
       },
       "gridPos": {
         "x": 5,
-        "y": 105,
+        "y": 126,
         "w": 5,
         "h": 4
       },
@@ -3456,7 +3978,7 @@
       },
       "gridPos": {
         "x": 10,
-        "y": 105,
+        "y": 126,
         "w": 5,
         "h": 4
       },
@@ -3517,7 +4039,7 @@
       },
       "gridPos": {
         "x": 15,
-        "y": 105,
+        "y": 126,
         "w": 5,
         "h": 4
       },
@@ -3583,7 +4105,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 105,
+        "y": 126,
         "w": 4,
         "h": 4
       },
@@ -3644,7 +4166,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 109,
+        "y": 130,
         "w": 12,
         "h": 8
       },
@@ -3709,7 +4231,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 109,
+        "y": 130,
         "w": 12,
         "h": 8
       },
@@ -3783,7 +4305,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 117,
+        "y": 138,
         "w": 12,
         "h": 7
       },
@@ -3857,7 +4379,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 117,
+        "y": 138,
         "w": 12,
         "h": 7
       },
@@ -3920,7 +4442,7 @@
       "description": "Share of /event's filtered state-group lookups answered from cache rather than a recursive walk of state_groups_state. 'filtered_cache' is the per-(group,filter) cache; 'state_cache' means the whole map happened to be resident.",
       "gridPos": {
         "x": 0,
-        "y": 125,
+        "y": 146,
         "w": 6,
         "h": 4
       },
@@ -3992,7 +4514,7 @@
       "description": "Filtered state-group resolutions by query kind and source. 'database' means a recursive CTE over state_groups_state; 'cache' means the whole map was already resolved.",
       "gridPos": {
         "x": 6,
-        "y": 125,
+        "y": 146,
         "w": 18,
         "h": 4
       },
@@ -4042,7 +4564,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 129,
+        "y": 150,
         "w": 24,
         "h": 1
       },
@@ -4058,7 +4580,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 130,
+        "y": 151,
         "w": 4,
         "h": 4
       },
@@ -4140,7 +4662,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 130,
+        "y": 151,
         "w": 4,
         "h": 4
       },
@@ -4202,7 +4724,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 130,
+        "y": 151,
         "w": 4,
         "h": 4
       },
@@ -4268,7 +4790,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 130,
+        "y": 151,
         "w": 12,
         "h": 8
       },
@@ -4322,7 +4844,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 134,
+        "y": 155,
         "w": 12,
         "h": 4
       },
@@ -4367,12 +4889,147 @@
       ]
     },
     {
+      "id": 19,
+      "type": "stat",
+      "title": "Invalidation stream age",
+      "description": "Time since the last replication message. The caches are armed only while this subscription is healthy, so a stream that has gone quiet is the difference between a cache that is safe and one that is silently stale. Quiet periods are normal overnight; hours of silence during European daytime are not.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 159,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "time() - max(gopro_replication_last_message_timestamp_seconds{job=~\"$job\"})",
+          "legendFormat": "Invalidation stream age",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Diff log throughput",
+      "description": "Records written and files rotated. A soak whose evidence is being dropped or failing to write is not a soak, and rotations tell you how fast the retained history is being consumed.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 159,
+        "w": 18,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gopro_difflog_logged_total{job=~\"$job\"}[$bucket]))",
+          "legendFormat": "logged",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gopro_difflog_rotations_total{job=~\"$job\"}[$bucket]))",
+          "legendFormat": "rotations",
+          "range": true,
+          "refId": "B"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Process",
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 138,
+        "y": 163,
         "w": 24,
         "h": 1
       },
@@ -4589,7 +5246,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 139,
+        "y": 164,
         "w": 4,
         "h": 4
       },
@@ -4651,7 +5308,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 139,
+        "y": 164,
         "w": 4,
         "h": 4
       },
@@ -4713,7 +5370,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 139,
+        "y": 164,
         "w": 4,
         "h": 4
       },
@@ -4775,7 +5432,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 139,
+        "y": 164,
         "w": 4,
         "h": 4
       },
@@ -4837,7 +5494,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 139,
+        "y": 164,
         "w": 4,
         "h": 4
       },
@@ -4899,7 +5556,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 139,
+        "y": 164,
         "w": 4,
         "h": 4
       },
@@ -4961,7 +5618,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 143,
+        "y": 168,
         "w": 12,
         "h": 7
       },
@@ -5026,7 +5683,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 143,
+        "y": 168,
         "w": 12,
         "h": 7
       },

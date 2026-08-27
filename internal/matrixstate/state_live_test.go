@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -61,7 +62,32 @@ func liveSigningKey(t *testing.T) *federation.SigningKey {
 
 // askSynapseForState makes a signed federation request and digests the
 // response as it streams, never holding the body.
+// liveClient talks to Synapse directly over its unix socket when one is
+// configured, and through the public hostname otherwise.
+//
+// The direct path exists because the worker's upstream budget is 60s and
+// Synapse needs 82s for the largest room here -- so going through the proxy
+// excludes exactly the room that carries almost all /state traffic, which is
+// the one most worth verifying. A test that quietly skipped it would report
+// success while never having checked the case that matters.
+func liveClient() *http.Client {
+	c := &http.Client{Timeout: 10 * time.Minute}
+	if sock := os.Getenv("GOPRO_SYNAPSE_SOCK"); sock != "" {
+		c.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+			},
+		}
+	}
+	return c
+}
+
 func askSynapseForState(t *testing.T, key *federation.SigningKey, base, roomID, eventID string) (StateResult, int) {
+	t.Helper()
+	return askSynapseVia(t, liveClient(), key, base, roomID, eventID)
+}
+
+func askSynapseVia(t *testing.T, client *http.Client, key *federation.SigningKey, base, roomID, eventID string) (StateResult, int) {
 	t.Helper()
 
 	// Built once and used for both the signature and the request: the
@@ -87,7 +113,7 @@ func askSynapseForState(t *testing.T, key *federation.SigningKey, base, roomID, 
 	req.Header.Set("Authorization", auth)
 	req.Host = ourServer
 
-	resp, err := (&http.Client{Timeout: 3 * time.Minute}).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
@@ -132,7 +158,11 @@ func TestLiveStateAgainstSynapse(t *testing.T) {
 	key := liveSigningKey(t)
 	base := os.Getenv("GOPRO_LIVE_BASE")
 	if base == "" {
-		base = "https://" + ourServer
+		if os.Getenv("GOPRO_SYNAPSE_SOCK") != "" {
+			base = "http://synapse"
+		} else {
+			base = "https://" + ourServer
+		}
 	}
 	ctx := context.Background()
 

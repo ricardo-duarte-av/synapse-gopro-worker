@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -45,6 +46,9 @@ type Result struct {
 	Canceled bool
 	// Err is non-nil if the upstream could not be reached.
 	Err error
+	// SinkErr is non-nil if a streaming comparison sink failed. The response
+	// was still served: this reports only that the comparison is unusable.
+	SinkErr error
 }
 
 // Proxy forwards requests to a pool of Synapse federation workers.
@@ -169,8 +173,27 @@ func rewrite(r *httputil.ProxyRequest, host string) {
 // If captureLimit is greater than zero, up to that many bytes of the response
 // body are retained in Result.Body for shadow comparison.
 func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request, captureLimit int64) Result {
+	return p.forward(w, r, captureLimit, nil)
+}
+
+// ForwardStreaming proxies r upstream, writing the response to w and streaming
+// every body byte through sink as it goes.
+//
+// This exists for /state, whose responses cannot be captured: the largest here
+// is about 97MB, and buffering one to compare it would recreate the memory
+// problem the endpoint is being rewritten to avoid. The sink sees the bytes on
+// their way to the client, so comparison costs no extra memory and no extra
+// upstream request.
+//
+// A sink that fails is recorded in Result.SinkErr and then ignored for the
+// rest of the response. Comparison is diagnostics; serving is not.
+func (p *Proxy) ForwardStreaming(w http.ResponseWriter, r *http.Request, sink io.Writer) Result {
+	return p.forward(w, r, 0, sink)
+}
+
+func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, captureLimit int64, sink io.Writer) Result {
 	b := p.pick()
-	rec := &recorder{ResponseWriter: w, limit: captureLimit}
+	rec := &recorder{ResponseWriter: w, limit: captureLimit, sink: sink}
 
 	start := time.Now()
 	b.proxy.ServeHTTP(rec, r)
@@ -182,6 +205,7 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request, captureLimit int
 		Duration:  elapsed,
 		Bytes:     rec.written,
 		Truncated: rec.truncated,
+		SinkErr:   rec.sinkErr,
 	}
 	if captureLimit > 0 {
 		res.Body = rec.buf.Bytes()
@@ -223,6 +247,11 @@ type recorder struct {
 	limit     int64
 	buf       bytes.Buffer
 	truncated bool
+	// sink receives every body byte as it is written to the client, for
+	// responses too large to buffer. A write failure here is recorded and the
+	// sink is then ignored: a broken comparison must never break a response.
+	sink    io.Writer
+	sinkErr error
 }
 
 func (r *recorder) WriteHeader(status int) {
@@ -238,6 +267,11 @@ func (r *recorder) Write(p []byte) (int, error) {
 	}
 	n, err := r.ResponseWriter.Write(p)
 	r.written += int64(n)
+	if r.sink != nil && r.sinkErr == nil {
+		if _, serr := r.sink.Write(p[:n]); serr != nil {
+			r.sinkErr = serr
+		}
+	}
 	if r.limit > 0 {
 		remaining := r.limit - int64(r.buf.Len())
 		if remaining <= 0 {

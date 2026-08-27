@@ -16,15 +16,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
 )
 
 // Resolver computes native answers.
+//
+// State is the odd one out: it writes its answer rather than returning it,
+// because a /state response can reach 97MB here and returning one would defeat
+// the point of implementing the endpoint at all. Callers that only want to
+// compare pass io.Discard and use the digest.
 type Resolver interface {
 	StateIDs(ctx context.Context, origin, roomID, eventID string) (*matrixstate.StateIDsResponse, error)
 	Event(ctx context.Context, origin, serverName, eventID string) (*matrixstate.TransactionResponse, error)
+	State(ctx context.Context, w io.Writer, origin, roomID, eventID string) (matrixstate.StateResult, error)
 }
 
 // Request identifies what to answer.

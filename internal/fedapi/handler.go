@@ -11,6 +11,7 @@ import (
 
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/fedauth"
+	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
 	"github.com/daedric/synapse-gopro-worker/internal/metrics"
 	"github.com/daedric/synapse-gopro-worker/internal/native"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
@@ -299,15 +300,64 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// would be the wrong moment to stop looking for them.
 	var capture int64
 	shadowing := (mode.Kind == config.ModeShadow || mode.Kind == config.ModeCanary) && h.shadow != nil
-	if shadowing {
+
+	// /state is compared by digest rather than by captured body.
+	//
+	// Its responses reach 97MB here, so capturing one to diff it would
+	// recreate the memory problem the endpoint is being rewritten to avoid --
+	// and raising capture_mb enough to hold one would mean up to a gigabyte
+	// across concurrent comparisons. Instead the bytes are folded into a
+	// digest on their way to the client: no extra memory, no extra upstream
+	// request, no latency.
+	var sink *shadow.StateSink
+	switch {
+	case shadowing && route.Endpoint == EndpointState:
+		sink = shadow.NewStateSink()
+	case shadowing:
 		capture = h.captureLimit
 	}
 
-	res := h.proxy.Forward(w, r, capture)
+	var res proxy.Result
+	if sink != nil {
+		res = h.proxy.ForwardStreaming(w, r, sink.Writer())
+	} else {
+		res = h.proxy.Forward(w, r, capture)
+	}
+
+	// Always drained, even when the comparison is abandoned: the digester runs
+	// in its own goroutine and would otherwise be left blocked on a pipe that
+	// nobody closes.
+	var upstreamState matrixstate.StateResult
+	var upstreamStateErr error
+	if sink != nil {
+		upstreamState, upstreamStateErr = sink.Wait()
+		if res.SinkErr != nil {
+			upstreamStateErr = res.SinkErr
+		}
+	}
 
 	// The client has its answer by this point; comparison happens afterwards
 	// and never delays a response.
-	if shadowing && !res.Canceled && res.Err == nil {
+	if shadowing && !res.Canceled && res.Err == nil && sink != nil {
+		h.shadow.GoState(
+			shadow.Request{
+				Endpoint:   endpointName,
+				Origin:     origin,
+				RoomID:     roomID,
+				EventID:    eventID,
+				URI:        r.URL.RequestURI(),
+				Method:     r.Method,
+				AuthHeader: r.Header.Get("Authorization"),
+			},
+			shadow.ProxyResult{
+				Status:   res.Status,
+				Duration: res.Duration,
+			},
+			upstreamState, upstreamStateErr,
+		)
+	}
+
+	if shadowing && !res.Canceled && res.Err == nil && sink == nil {
 		h.shadow.Go(
 			shadow.Request{
 				Endpoint: string(route.Endpoint),

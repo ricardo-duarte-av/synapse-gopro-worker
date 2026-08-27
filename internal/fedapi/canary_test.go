@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -102,6 +103,10 @@ type fakeResolver struct {
 	err   error
 	panic bool
 	calls int
+	// stateBody is the /state response this resolver produces. Empty means
+	// /state is not configured, and State then fails rather than silently
+	// returning an empty result a test could mistake for agreement.
+	stateBody string
 }
 
 func (f *fakeResolver) StateIDs(ctx context.Context, origin, roomID, eventID string) (*matrixstate.StateIDsResponse, error) {
@@ -927,5 +932,127 @@ func TestClientGoneDoesNotForwardToSynapse(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
 		t.Errorf("Synapse was asked for %d answer(s) nobody was waiting for", got)
+	}
+}
+
+// State satisfies native.Resolver. /state is not exercised by these tests; a
+// fake that silently returned an empty result would let a test claiming to
+// cover it pass without doing anything.
+func (f *fakeResolver) State(ctx context.Context, w io.Writer, origin, roomID, eventID string) (matrixstate.StateResult, error) {
+	f.calls++
+	if f.panic {
+		panic("boom")
+	}
+	if f.stateBody == "" {
+		return matrixstate.StateResult{}, errors.New("fakeResolver: State not configured")
+	}
+	if _, err := io.WriteString(w, f.stateBody); err != nil {
+		return matrixstate.StateResult{}, err
+	}
+	// Digested the same way the real resolver digests what it writes, so the
+	// test exercises the comparison rather than a shortcut around it.
+	return matrixstate.DigestStateResponse(strings.NewReader(f.stateBody))
+}
+
+func (s *slowResolver) State(ctx context.Context, w io.Writer, origin, roomID, eventID string) (matrixstate.StateResult, error) {
+	select {
+	case <-time.After(s.delay):
+		return matrixstate.StateResult{}, nil
+	case <-ctx.Done():
+		return matrixstate.StateResult{}, ctx.Err()
+	}
+}
+
+// End to end: /state in shadow mode is compared by digest, without either side
+// being buffered.
+//
+// The upstream response never passes through a capture buffer -- it is folded
+// into a digest on its way to the client -- so this is the only test that can
+// show the comparison happening at all for an endpoint whose responses cannot
+// be captured.
+func TestStateIsComparedByDigest(t *testing.T) {
+	const body = `{"pdus":[{"a":1,"depth":5,"unsigned":{}},{"b":2,"unsigned":{}}],` +
+		`"auth_chain":[{"c":3,"unsigned":{}}]}`
+
+	for _, tc := range []struct {
+		name      string
+		ours      string
+		wantMatch bool
+	}{
+		{"identical", body, true},
+		// Key order differs on every event in reality, because we splice stored
+		// JSON while Synapse re-serialises from a dict.
+		{"same content, different key order",
+			`{"auth_chain":[{"unsigned":{},"c":3}],"pdus":[{"unsigned":{},"depth":5,"a":1},{"unsigned":{},"b":2}]}`, true},
+		{"a PDU differs",
+			`{"pdus":[{"a":1,"depth":6,"unsigned":{}},{"b":2,"unsigned":{}}],"auth_chain":[{"c":3,"unsigned":{}}]}`, false},
+		{"a PDU is missing",
+			`{"pdus":[{"a":1,"depth":5,"unsigned":{}}],"auth_chain":[{"c":3,"unsigned":{}}]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			beforeMatch := labelledCounter(t, "gopro_shadow_results_total", "result", "match")
+			beforeBody := labelledCounter(t, "gopro_shadow_results_total", "result", "body_mismatch")
+
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, body)
+			}))
+			defer upstream.Close()
+
+			cfg := &config.Config{
+				ServerName: "example.com",
+				Endpoints: config.Endpoints{
+					Event: config.Mode{Kind: config.ModeProxy}, StateIDs: config.Mode{Kind: config.ModeProxy},
+					State: config.Mode{Kind: config.ModeShadow},
+				},
+				Shadow: config.Shadow{Concurrency: 4, CaptureMB: 1},
+			}
+			p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := &fakeResolver{stateBody: tc.ours}
+			runner := shadow.NewRunner(res, "example.com", nil, nil, zerolog.Nop(),
+				shadow.Options{Concurrency: 4, Timeout: 5 * time.Second})
+
+			front := httptest.NewServer(New(cfg, p, runner, zerolog.Nop(),
+				WithNative(res, acceptingVerifier{}, 5*time.Second, 30*time.Second)))
+			defer front.Close()
+
+			status, got := rawGet(t, front.Listener.Addr().String(),
+				"/_matrix/federation/v1/state/%21r%3Aexample.com?event_id=%24evt",
+				`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`)
+
+			// The client must still receive Synapse's answer untouched: shadow
+			// mode serves the proxy, and the digest rides along.
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want 200", status)
+			}
+			if got != body {
+				t.Errorf("client got %q, want Synapse's body verbatim", got)
+			}
+
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				if labelledCounter(t, "gopro_shadow_results_total", "result", "match") > beforeMatch ||
+					labelledCounter(t, "gopro_shadow_results_total", "result", "body_mismatch") > beforeBody {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+
+			matched := labelledCounter(t, "gopro_shadow_results_total", "result", "match") > beforeMatch
+			mismatched := labelledCounter(t, "gopro_shadow_results_total", "result", "body_mismatch") > beforeBody
+
+			if tc.wantMatch && !matched {
+				t.Error("identical responses were not recorded as a match")
+			}
+			if !tc.wantMatch && !mismatched {
+				t.Error("differing responses were not recorded as a mismatch")
+			}
+			if tc.wantMatch && mismatched {
+				t.Error("identical responses were recorded as a mismatch")
+			}
+		})
 	}
 }

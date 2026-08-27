@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"strconv"
 
+	"github.com/daedric/synapse-gopro-worker/internal/pducmp"
 	"github.com/daedric/synapse-gopro-worker/internal/store"
 )
 
@@ -32,9 +33,16 @@ type StateResult struct {
 	PDUs      int
 	AuthChain int
 	Bytes     int64
-	// Digest identifies the response contents independently of ordering. See
-	// digestAccumulator.
-	Digest [32]byte
+	// PDUDigest and AuthChainDigest identify each array's contents
+	// independently of ordering. See digestAccumulator.
+	//
+	// Kept separate on purpose. One digest spanning both arrays would match
+	// even if an event were placed in the wrong one, and "we put it in
+	// auth_chain and Synapse put it in pdus" is exactly the sort of
+	// disagreement worth catching -- the two arrays are built by different
+	// queries and only the first is filtered by state resolution.
+	PDUDigest       [32]byte
+	AuthChainDigest [32]byte
 }
 
 // digestAccumulator builds an order-independent digest of a set of PDUs.
@@ -55,11 +63,17 @@ type digestAccumulator struct {
 	count int
 }
 
-func (d *digestAccumulator) add(eventID string, body []byte) {
+// add folds in one PDU, which must already be in canonical form.
+//
+// The event ID is deliberately not part of the contribution. Synapse's
+// response carries no event_id for room version 3 and later -- the ID is the
+// event's reference hash -- so a digest keyed on it could not be computed from
+// the far side without hashing every event again. Nothing is lost by leaving
+// it out: the ID is a function of the body, so identical bodies have identical
+// IDs.
+func (d *digestAccumulator) add(canonical []byte) {
 	h := sha256.New()
-	h.Write([]byte(eventID))
-	h.Write([]byte{0})
-	h.Write(body)
+	h.Write(canonical)
 	var v big.Int
 	v.SetBytes(h.Sum(nil))
 	d.sum.Add(&d.sum, &v)
@@ -154,7 +168,7 @@ func (r *Resolver) State(ctx context.Context, w io.Writer, origin, roomID, event
 	}
 
 	cw := &countingWriter{w: w}
-	var digest digestAccumulator
+	var pduDigest, authDigest digestAccumulator
 
 	if _, err := io.WriteString(cw, `{"pdus":[`); err != nil {
 		return res, err
@@ -164,7 +178,7 @@ func (r *Resolver) State(ctx context.Context, w io.Writer, origin, roomID, event
 	// from what was found rather than from what is served.
 	found := make([]string, 0, len(stateIDs))
 
-	n, err := r.streamEvents(ctx, cw, &digest, stateIDs, &found)
+	n, err := r.streamEvents(ctx, cw, &pduDigest, stateIDs, &found)
 	if err != nil {
 		return res, err
 	}
@@ -182,7 +196,7 @@ func (r *Resolver) State(ctx context.Context, w io.Writer, origin, roomID, event
 		authChainFallbacks.Inc()
 	}
 
-	n, err = r.streamEvents(ctx, cw, &digest, authIDs, nil)
+	n, err = r.streamEvents(ctx, cw, &authDigest, authIDs, nil)
 	if err != nil {
 		return res, err
 	}
@@ -193,7 +207,8 @@ func (r *Resolver) State(ctx context.Context, w io.Writer, origin, roomID, event
 	}
 
 	res.Bytes = cw.n
-	res.Digest = digest.digest()
+	res.PDUDigest = pduDigest.digest()
+	res.AuthChainDigest = authDigest.digest()
 	return res, nil
 }
 
@@ -226,6 +241,18 @@ func (r *Resolver) streamEvents(ctx context.Context, w io.Writer, digest *digest
 				continue
 			}
 
+			// Digested in canonical form, but written to the client verbatim.
+			// The stored JSON is spliced rather than re-encoded on purpose:
+			// 14,654 events here carry an escaped NUL, and a response is not
+			// the place to discover that a round trip altered one.
+			canonical, ok := pducmp.Canonical(body)
+			if !ok {
+				return fmt.Errorf("canonicalise %s: unparseable event JSON", id)
+			}
+			if emitsCachePollution(body) {
+				statePrevContentEmitted.Inc()
+			}
+
 			if written > 0 {
 				if _, err := io.WriteString(w, ","); err != nil {
 					return err
@@ -234,7 +261,7 @@ func (r *Resolver) streamEvents(ctx context.Context, w io.Writer, digest *digest
 			if _, err := w.Write(body); err != nil {
 				return err
 			}
-			digest.add(id, body)
+			digest.add(canonical)
 			written++
 		}
 		return nil
@@ -280,4 +307,137 @@ func (r *Resolver) serialisePDU(ev *store.Event) ([]byte, error) {
 		return nil, fmt.Errorf("prepare pdu %s: %w", ev.EventID, err)
 	}
 	return out, nil
+}
+
+// emitsCachePollution reports that a PDU we are about to serve carries
+// prev_content or prev_sender.
+//
+// Canonical drops those from both sides, because a digest cannot apply a
+// tolerance asymmetrically the way Equal does. That loses the one direction
+// worth knowing about: Synapse emitting them is its cached EventBase leaking
+// and is not our concern, but us emitting them would be our bug.
+//
+// It is recoverable with no comparison at all -- we can look at what we
+// produced. get_persisted_pdu does not load these fields, so if we emit one it
+// came from stored JSON and wants explaining.
+//
+// Checked on the parsed unsigned object rather than by scanning the body for
+// the field names, which would count any message whose text happens to mention
+// them.
+func emitsCachePollution(body []byte) bool {
+	var ev struct {
+		Unsigned map[string]json.RawMessage `json:"unsigned"`
+	}
+	if err := json.Unmarshal(body, &ev); err != nil {
+		return false
+	}
+	for _, field := range []string{"prev_content", "prev_sender"} {
+		if _, ok := ev.Unsigned[field]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// DigestStateResponse computes a StateResult from a /state response body.
+//
+// This is the far half of the comparison. Shadow mode cannot capture a /state
+// response -- the largest here is about 97MB, and raising capture_mb to hold
+// one would mean up to a gigabyte across 16 concurrent comparisons, recreating
+// the problem the streaming resolver exists to avoid. So Synapse's answer is
+// streamed and folded into the same digest instead, and the two sides are
+// compared as 32 bytes.
+//
+// Memory is bounded by the largest single PDU, not by the response.
+//
+// The depth filter is deliberately not applied here: Synapse has already
+// applied it to what it sent, and applying it again would hide precisely the
+// disagreement this comparison exists to find.
+func DigestStateResponse(r io.Reader) (StateResult, error) {
+	var res StateResult
+	dec := json.NewDecoder(r)
+
+	tok, err := dec.Token()
+	if err != nil {
+		return res, fmt.Errorf("state response: %w", err)
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return res, fmt.Errorf("state response: expected object, got %v", tok)
+	}
+
+	var pduDigest, authDigest digestAccumulator
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return res, fmt.Errorf("state response: %w", err)
+		}
+		key, _ := keyTok.(string)
+
+		switch key {
+		case "pdus":
+			n, err := digestArray(dec, &pduDigest)
+			if err != nil {
+				return res, fmt.Errorf("state response pdus: %w", err)
+			}
+			res.PDUs = n
+		case "auth_chain":
+			n, err := digestArray(dec, &authDigest)
+			if err != nil {
+				return res, fmt.Errorf("state response auth_chain: %w", err)
+			}
+			res.AuthChain = n
+		default:
+			// An unknown field is skipped rather than refused: Synapse may add
+			// one, and a comparison that fell over on it would be worse than
+			// one that ignores it. Decoding into RawMessage discards the value
+			// without buffering the rest of the response.
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return res, fmt.Errorf("state response: skip %q: %w", key, err)
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return res, fmt.Errorf("state response: %w", err)
+	}
+
+	res.PDUDigest = pduDigest.digest()
+	res.AuthChainDigest = authDigest.digest()
+	return res, nil
+}
+
+// Agrees reports whether two /state answers are the same, in both arrays.
+func (s StateResult) Agrees(other StateResult) bool {
+	return s.PDUDigest == other.PDUDigest &&
+		s.AuthChainDigest == other.AuthChainDigest
+}
+
+// digestArray folds one array of PDUs into the digest and reports how many it
+// held.
+func digestArray(dec *json.Decoder, digest *digestAccumulator) (int, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return 0, err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '[' {
+		return 0, fmt.Errorf("expected array, got %v", tok)
+	}
+
+	n := 0
+	for dec.More() {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return n, err
+		}
+		canonical, ok := pducmp.Canonical(raw)
+		if !ok {
+			return n, fmt.Errorf("unparseable pdu at index %d", n)
+		}
+		digest.add(canonical)
+		n++
+	}
+	if _, err := dec.Token(); err != nil {
+		return n, err
+	}
+	return n, nil
 }

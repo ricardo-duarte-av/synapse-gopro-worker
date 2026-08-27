@@ -2,6 +2,7 @@ package matrixstate
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -40,18 +41,23 @@ func TestDepthInCanonicalRange(t *testing.T) {
 	}
 }
 
-// The digest must not depend on ordering, because the two sides may order the same
-// set differently, and must still distinguish a set from a multiset.
+// The digest must not depend on ordering, because the two sides may order the
+// same set differently, and must still distinguish a set from a multiset.
+//
+// Event IDs deliberately do not participate: Synapse's response carries no
+// event_id for room version 3 and later, so a digest keyed on it could not be
+// computed from the far side without re-hashing every event. Nothing is lost,
+// because the ID is a function of the body.
 func TestDigestAccumulator(t *testing.T) {
-	build := func(pairs ...[2]string) [32]byte {
+	build := func(bodies ...string) [32]byte {
 		var d digestAccumulator
-		for _, p := range pairs {
-			d.add(p[0], []byte(p[1]))
+		for _, b := range bodies {
+			d.add([]byte(b))
 		}
 		return d.digest()
 	}
-	a := [2]string{"$a", `{"x":1}`}
-	b := [2]string{"$b", `{"y":2}`}
+	a := `{"x":1}`
+	b := `{"y":2}`
 
 	if build(a, b) != build(b, a) {
 		t.Error("digest depends on ordering; the two sides may order a set differently")
@@ -67,13 +73,8 @@ func TestDigestAccumulator(t *testing.T) {
 	if build(a, a) == build(a) {
 		t.Error("digest cannot distinguish one occurrence from two")
 	}
-	// Same ID, different body must differ.
-	if build(a) == build([2]string{"$a", `{"x":2}`}) {
+	if build(a) == build(`{"x":2}`) {
 		t.Error("digest ignored the body")
-	}
-	// Same body, different ID must differ.
-	if build(a) == build([2]string{"$c", `{"x":1}`}) {
-		t.Error("digest ignored the event ID")
 	}
 }
 
@@ -122,4 +123,137 @@ func TestAgeConversionOnlyWithAClock(t *testing.T) {
 	if string(u["replaces_state"]) != `"$p"` {
 		t.Errorf("replaces_state = %s, want it kept", u["replaces_state"])
 	}
+}
+
+// The counter must not fire on an ordinary event, and must not be fooled by a
+// message that merely mentions the field names.
+func TestEmitsCachePollution(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"ordinary event", `{"unsigned":{"age_ts":5}}`, false},
+		{"empty unsigned", `{"unsigned":{}}`, false},
+		{"no unsigned at all", `{"type":"m.room.member"}`, false},
+		{"prev_content present", `{"unsigned":{"prev_content":{"membership":"join"}}}`, true},
+		{"prev_sender present", `{"unsigned":{"prev_sender":"@a:b"}}`, true},
+		// A body scan would count this; a parse does not.
+		{"message text mentioning the field", `{"content":{"body":"what is prev_content for?"},"unsigned":{}}`, false},
+		// Nor should a field of that name anywhere but unsigned.
+		{"prev_content in content", `{"content":{"prev_content":1},"unsigned":{}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := emitsCachePollution([]byte(tc.body)); got != tc.want {
+				t.Errorf("emitsCachePollution(%s) = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+func digestOf(t *testing.T, body string) StateResult {
+	t.Helper()
+	res, err := DigestStateResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("DigestStateResponse(%s): %v", body, err)
+	}
+	return res
+}
+
+// The comparison must survive the ways two correct implementations legitimately
+// differ, and must still catch the ways they must not.
+func TestDigestStateResponse(t *testing.T) {
+	base := `{"pdus":[{"a":1,"depth":5,"unsigned":{}},{"b":2,"unsigned":{}}],` +
+		`"auth_chain":[{"c":3,"unsigned":{}}]}`
+	want := digestOf(t, base)
+
+	if want.PDUs != 2 || want.AuthChain != 1 {
+		t.Fatalf("counts = %d/%d, want 2/1", want.PDUs, want.AuthChain)
+	}
+
+	t.Run("element order does not matter", func(t *testing.T) {
+		got := digestOf(t, `{"pdus":[{"b":2,"unsigned":{}},{"a":1,"depth":5,"unsigned":{}}],`+
+			`"auth_chain":[{"c":3,"unsigned":{}}]}`)
+		if !got.Agrees(want) {
+			t.Error("reordering the arrays changed the digest")
+		}
+	})
+
+	t.Run("key order inside a PDU does not matter", func(t *testing.T) {
+		got := digestOf(t, `{"pdus":[{"depth":5,"unsigned":{},"a":1},{"unsigned":{},"b":2}],`+
+			`"auth_chain":[{"unsigned":{},"c":3}]}`)
+		if !got.Agrees(want) {
+			t.Error("key order inside a PDU changed the digest; our responses splice " +
+				"stored JSON while Synapse re-serialises from a dict, so this differs on every event")
+		}
+	})
+
+	t.Run("top-level field order does not matter", func(t *testing.T) {
+		got := digestOf(t, `{"auth_chain":[{"c":3,"unsigned":{}}],`+
+			`"pdus":[{"a":1,"depth":5,"unsigned":{}},{"b":2,"unsigned":{}}]}`)
+		if !got.Agrees(want) {
+			t.Error("top-level key order changed the digest")
+		}
+	})
+
+	t.Run("an unknown field is ignored", func(t *testing.T) {
+		got := digestOf(t, `{"pdus":[{"a":1,"depth":5,"unsigned":{}},{"b":2,"unsigned":{}}],`+
+			`"auth_chain":[{"c":3,"unsigned":{}}],"something_new":{"x":[1,2,3]}}`)
+		if !got.Agrees(want) {
+			t.Error("an added top-level field broke the comparison; Synapse may add one")
+		}
+	})
+
+	t.Run("a changed PDU is caught", func(t *testing.T) {
+		got := digestOf(t, `{"pdus":[{"a":1,"depth":6,"unsigned":{}},{"b":2,"unsigned":{}}],`+
+			`"auth_chain":[{"c":3,"unsigned":{}}]}`)
+		if got.Agrees(want) {
+			t.Error("a changed depth went undetected")
+		}
+	})
+
+	t.Run("a missing PDU is caught", func(t *testing.T) {
+		got := digestOf(t, `{"pdus":[{"a":1,"depth":5,"unsigned":{}}],`+
+			`"auth_chain":[{"c":3,"unsigned":{}}]}`)
+		if got.Agrees(want) {
+			t.Error("a dropped PDU went undetected")
+		}
+	})
+
+	// The reason the two arrays are digested separately.
+	t.Run("an event in the wrong array is caught", func(t *testing.T) {
+		got := digestOf(t, `{"pdus":[{"a":1,"depth":5,"unsigned":{}}],`+
+			`"auth_chain":[{"c":3,"unsigned":{}},{"b":2,"unsigned":{}}]}`)
+		if got.Agrees(want) {
+			t.Error("moving an event from pdus to auth_chain went undetected; " +
+				"one digest across both arrays would miss this")
+		}
+	})
+
+	t.Run("cache pollution is tolerated", func(t *testing.T) {
+		got := digestOf(t, `{"pdus":[{"a":1,"depth":5,"unsigned":{"prev_content":{"x":1}}},`+
+			`{"b":2,"unsigned":{}}],"auth_chain":[{"c":3,"unsigned":{}}]}`)
+		if !got.Agrees(want) {
+			t.Error("Synapse's cached prev_content was reported as a disagreement")
+		}
+	})
+
+	t.Run("empty arrays", func(t *testing.T) {
+		got := digestOf(t, `{"pdus":[],"auth_chain":[]}`)
+		if got.PDUs != 0 || got.AuthChain != 0 {
+			t.Errorf("counts = %d/%d, want 0/0", got.PDUs, got.AuthChain)
+		}
+		if got.Agrees(want) {
+			t.Error("an empty response agreed with a populated one")
+		}
+	})
+
+	t.Run("malformed body is an error, not a silent match", func(t *testing.T) {
+		if _, err := DigestStateResponse(strings.NewReader(`{"pdus":[{"a":1}`)); err == nil {
+			t.Error("a truncated response was accepted")
+		}
+		if _, err := DigestStateResponse(strings.NewReader(`not json`)); err == nil {
+			t.Error("a non-JSON response was accepted")
+		}
+	})
 }

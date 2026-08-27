@@ -753,3 +753,74 @@ func nativelyServedRequestIsLogged(t *testing.T, endpointMode config.Mode) {
 		}
 	}
 }
+
+// histogramCount returns how many observations a histogram holds, summed
+// across label values.
+func histogramCount(t *testing.T, name string) uint64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total uint64
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			total += m.GetHistogram().GetSampleCount()
+		}
+	}
+	return total
+}
+
+// A served request must be timed end to end, not just for the answer.
+//
+// gopro_native_duration_seconds times only h.answer, so it excludes X-Matrix
+// verification -- which sits in front of it and needs a network key fetch for
+// any origin whose keys are not cached. Reporting that as "native latency"
+// would report the number we control rather than the number the federation
+// waits for, and it is exactly the shape of mistake §9 of the working notes
+// keeps recording: a measurement that answers an adjacent question.
+//
+// The assertion is that the end-to-end histogram observes at least as much as
+// the answer histogram, request for request. Verification is microseconds
+// against the fake verifier here, so asserting a strictly larger value would
+// be flaky; asserting both were observed is the durable claim.
+func TestNativeRequestIsTimedEndToEnd(t *testing.T) {
+	beforeE2E := histogramCount(t, "gopro_native_request_seconds")
+	beforeAnswer := histogramCount(t, "gopro_native_duration_seconds")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeNative},
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &fakeResolver{resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}}}
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop(),
+		WithNative(res, acceptingVerifier{}, 5*time.Second, 30*time.Second)))
+	defer front.Close()
+
+	if status, _ := rawGet(t, front.Listener.Addr().String(),
+		"/_matrix/federation/v1/state_ids/%21r%3Aexample.com?event_id=%24evt",
+		`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`); status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 served natively", status)
+	}
+
+	if got := histogramCount(t, "gopro_native_request_seconds") - beforeE2E; got != 1 {
+		t.Errorf("gopro_native_request_seconds observed %d times, want 1: a served "+
+			"request must be timed end to end, verification included", got)
+	}
+	if got := histogramCount(t, "gopro_native_duration_seconds") - beforeAnswer; got != 1 {
+		t.Errorf("gopro_native_duration_seconds observed %d times, want 1", got)
+	}
+}

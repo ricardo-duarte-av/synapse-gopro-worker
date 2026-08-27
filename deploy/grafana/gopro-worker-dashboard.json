@@ -1523,7 +1523,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 39,
+        "y": 43,
         "w": 24,
         "h": 9
       },
@@ -1620,7 +1620,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 48,
+        "y": 52,
         "w": 12,
         "h": 8
       },
@@ -1674,7 +1674,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 48,
+        "y": 52,
         "w": 12,
         "h": 8
       },
@@ -1724,7 +1724,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 56,
+        "y": 60,
         "w": 24,
         "h": 1
       },
@@ -1740,7 +1740,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 57,
+        "y": 61,
         "w": 4,
         "h": 4
       },
@@ -1802,7 +1802,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 57,
+        "y": 61,
         "w": 4,
         "h": 4
       },
@@ -1872,7 +1872,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 57,
+        "y": 61,
         "w": 4,
         "h": 4
       },
@@ -1938,7 +1938,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 57,
+        "y": 61,
         "w": 12,
         "h": 8
       },
@@ -1992,7 +1992,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 61,
+        "y": 65,
         "w": 12,
         "h": 4
       },
@@ -2059,12 +2059,710 @@
       ]
     },
     {
+      "id": 1,
+      "type": "row",
+      "title": "Native performance (answers we served)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 69,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Native p50",
+      "description": "What a remote server waited for a median natively served request: verification plus the answer. Quantiles are taken over the whole selected range rather than per bucket: at this volume a bucket with no observations yields NaN and the panel draws empty. These series do not exist until the first answer is served natively -- Prometheus creates counter and histogram children on first increment -- so this row is empty in proxy and shadow mode, and after every restart until the first native answer.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 70,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(gopro_native_request_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__range])))",
+          "legendFormat": "Native p50",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Native p90",
+      "description": "End-to-end, 90th percentile. Quantiles are taken over the whole selected range rather than per bucket: at this volume a bucket with no observations yields NaN and the panel draws empty.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 70,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(gopro_native_request_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__range])))",
+          "legendFormat": "Native p90",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Native p99",
+      "description": "End-to-end, 99th percentile. This is the number to compare against Synapse's tail, which is where the advantage has always been -- not at p50.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 70,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_native_request_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__range])))",
+          "legendFormat": "Native p99",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Answer p99",
+      "description": "The answer alone, excluding verification: state resolution, cache lookups and serialisation. This is the part we control and optimise. If it is flat while Native p99 rises, the cost is verification, not our code.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 70,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_native_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__range])))",
+          "legendFormat": "Answer p99",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Verification overhead",
+      "description": "Native p50 minus Answer p50, i.e. what X-Matrix verification costs a median request. Normally microseconds against a warm key cache; an origin whose keys must be fetched over the network costs a round trip, and against an unhealthy key server that has meant tens of seconds. Read it as an indication, not an exact figure: a difference of quantiles is not the quantile of differences.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 70,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "(histogram_quantile(0.5, sum by (le) (rate(gopro_native_request_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__range])))) - (histogram_quantile(0.5, sum by (le) (rate(gopro_native_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$__range]))))",
+          "legendFormat": "Verification overhead",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Served natively",
+      "description": "Rate of answers produced and sent by us. Judge a canary by this, never by assuming the configured percentage: sampling hashes the event ID, so concentrated traffic on a few hot events can push the served share well below or above N.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 70,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gopro_native_served_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
+          "legendFormat": "Served natively",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Native latency percentiles by endpoint",
+      "description": "End-to-end time for requests we served, per endpoint. Log scale, because p50 and p99 differ by orders of magnitude. Unlike the shadow histogram this covers only answers that actually reached a remote server. Uses $bucket rather than the full range so change over time is visible; if it draws empty, widen $bucket -- see the stats above, which do not have that problem. These series do not exist until the first answer is served natively -- Prometheus creates counter and histogram children on first increment -- so this row is empty in proxy and shadow mode, and after every restart until the first native answer.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 74,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, endpoint) (rate(gopro_native_request_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
+          "legendFormat": "p50 {{endpoint}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, endpoint) (rate(gopro_native_request_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
+          "legendFormat": "p90 {{endpoint}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(gopro_native_request_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
+          "legendFormat": "p99 {{endpoint}}",
+          "range": true,
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Where the time goes: verification vs answer",
+      "description": "The gap between the two pairs is X-Matrix verification. gopro_native_duration_seconds times only the answer, which is the part we optimise but not the part a remote server waits for -- verification sits in front of it and needs a network key fetch for any origin whose keys are not cached. The rate limiter is outside both: it is acquired before the attempt begins and is measured separately by gopro_rate_limit_queue_wait_seconds, so this gap is verification and nothing else.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 74,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(gopro_native_request_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
+          "legendFormat": "end-to-end p50",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(gopro_native_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
+          "legendFormat": "answer p50",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_native_request_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
+          "legendFormat": "end-to-end p99",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gopro_native_duration_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket])))",
+          "legendFormat": "answer p99",
+          "range": true,
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "heatmap",
+      "title": "Native latency distribution",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Full spread of what remote servers waited for. A bimodal picture means cache hits and misses are resolving very differently -- expected on /state_ids, where a cold large room is orders of magnitude slower than a warm one.",
+      "gridPos": {
+        "x": 0,
+        "y": 82,
+        "w": 12,
+        "h": 8
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": {
+          "mode": "scheme",
+          "scheme": "Greens",
+          "steps": 64,
+          "reverse": false,
+          "exponent": 0.5,
+          "fill": "dark-green"
+        },
+        "yAxis": {
+          "unit": "s"
+        },
+        "tooltip": {
+          "show": true,
+          "yHistogram": true
+        },
+        "legend": {
+          "show": true
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (le) (rate(gopro_native_request_seconds_bucket{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
+          "legendFormat": "{{le}}",
+          "range": true,
+          "refId": "A",
+          "format": "heatmap"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Native answers served",
+      "description": "Throughput of what we answered, by endpoint and status. 403 and 404 are ordinary federation outcomes here -- a host not in the room, or an event we do not have -- not errors. Falling back to Synapse is counted separately in the Canary row and does not appear as a status.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 82,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (endpoint, status) (rate(gopro_native_served_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
+          "legendFormat": "{{endpoint}} {{status}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (endpoint) (rate(gopro_native_fallback_served_total{endpoint=~\"$endpoint\", job=~\"$job\"}[$bucket]))",
+          "legendFormat": "{{endpoint}} fell back",
+          "range": true,
+          "refId": "B"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Rate limiting",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 90,
         "w": 24,
         "h": 1
       },
@@ -2080,7 +2778,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 66,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2150,7 +2848,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 66,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2212,7 +2910,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 66,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2273,7 +2971,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 66,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2334,7 +3032,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 66,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2396,7 +3094,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 66,
+        "y": 91,
         "w": 4,
         "h": 4
       },
@@ -2466,7 +3164,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 70,
+        "y": 95,
         "w": 12,
         "h": 8
       },
@@ -2540,7 +3238,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 70,
+        "y": 95,
         "w": 12,
         "h": 8
       },
@@ -2610,7 +3308,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 79,
+        "y": 104,
         "w": 24,
         "h": 1
       },
@@ -2626,7 +3324,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 80,
+        "y": 105,
         "w": 5,
         "h": 4
       },
@@ -2696,7 +3394,7 @@
       },
       "gridPos": {
         "x": 5,
-        "y": 80,
+        "y": 105,
         "w": 5,
         "h": 4
       },
@@ -2758,7 +3456,7 @@
       },
       "gridPos": {
         "x": 10,
-        "y": 80,
+        "y": 105,
         "w": 5,
         "h": 4
       },
@@ -2819,7 +3517,7 @@
       },
       "gridPos": {
         "x": 15,
-        "y": 80,
+        "y": 105,
         "w": 5,
         "h": 4
       },
@@ -2885,7 +3583,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 80,
+        "y": 105,
         "w": 4,
         "h": 4
       },
@@ -2946,7 +3644,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 84,
+        "y": 109,
         "w": 12,
         "h": 8
       },
@@ -3011,7 +3709,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 84,
+        "y": 109,
         "w": 12,
         "h": 8
       },
@@ -3085,7 +3783,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 92,
+        "y": 117,
         "w": 12,
         "h": 7
       },
@@ -3159,7 +3857,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 92,
+        "y": 117,
         "w": 12,
         "h": 7
       },
@@ -3222,7 +3920,7 @@
       "description": "Share of /event's filtered state-group lookups answered from cache rather than a recursive walk of state_groups_state. 'filtered_cache' is the per-(group,filter) cache; 'state_cache' means the whole map happened to be resident.",
       "gridPos": {
         "x": 0,
-        "y": 100,
+        "y": 125,
         "w": 6,
         "h": 4
       },
@@ -3294,7 +3992,7 @@
       "description": "Filtered state-group resolutions by query kind and source. 'database' means a recursive CTE over state_groups_state; 'cache' means the whole map was already resolved.",
       "gridPos": {
         "x": 6,
-        "y": 100,
+        "y": 125,
         "w": 18,
         "h": 4
       },
@@ -3344,7 +4042,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 104,
+        "y": 129,
         "w": 24,
         "h": 1
       },
@@ -3360,7 +4058,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 105,
+        "y": 130,
         "w": 4,
         "h": 4
       },
@@ -3442,7 +4140,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 105,
+        "y": 130,
         "w": 4,
         "h": 4
       },
@@ -3504,7 +4202,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 105,
+        "y": 130,
         "w": 4,
         "h": 4
       },
@@ -3570,7 +4268,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 105,
+        "y": 130,
         "w": 12,
         "h": 8
       },
@@ -3624,7 +4322,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 109,
+        "y": 134,
         "w": 12,
         "h": 4
       },
@@ -3674,7 +4372,7 @@
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 113,
+        "y": 138,
         "w": 24,
         "h": 1
       },
@@ -3891,7 +4589,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 114,
+        "y": 139,
         "w": 4,
         "h": 4
       },
@@ -3953,7 +4651,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 114,
+        "y": 139,
         "w": 4,
         "h": 4
       },
@@ -4015,7 +4713,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 114,
+        "y": 139,
         "w": 4,
         "h": 4
       },
@@ -4077,7 +4775,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 114,
+        "y": 139,
         "w": 4,
         "h": 4
       },
@@ -4139,7 +4837,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 114,
+        "y": 139,
         "w": 4,
         "h": 4
       },
@@ -4201,7 +4899,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 114,
+        "y": 139,
         "w": 4,
         "h": 4
       },
@@ -4263,7 +4961,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 118,
+        "y": 143,
         "w": 12,
         "h": 7
       },
@@ -4328,7 +5026,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 118,
+        "y": 143,
         "w": 12,
         "h": 7
       },

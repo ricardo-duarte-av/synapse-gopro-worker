@@ -155,9 +155,12 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 	if mode.Kind == config.ModeCanary {
 		h.compareServed(r, endpoint, roomID, eventID, body, status, elapsed)
 	}
+	spent := time.Since(attemptStart)
+	nativeRequestDuration.WithLabelValues(endpoint).Observe(spent.Seconds())
+
 	return nativeResult{
 		Served: true,
-		Spent:  time.Since(attemptStart),
+		Spent:  spent,
 		Status: status,
 		Bytes:  int64(len(body)),
 	}

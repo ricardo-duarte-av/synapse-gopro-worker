@@ -65,6 +65,28 @@ var (
 		Help:    "Time to produce an answer that was served natively.",
 		Buckets: latencyBuckets,
 	}, []string{"endpoint"})
+
+	// nativeRequestDuration covers the whole served attempt: X-Matrix
+	// verification and then the answer.
+	//
+	// nativeDuration times only the answer, which is the part we optimise but
+	// not the part a remote server waits for. Verification sits in front of it
+	// and is not free -- an origin whose keys are not cached costs a network
+	// fetch, and on this deployment that has taken tens of seconds when the
+	// origin's key server is unhealthy (a dead AAAA record, in the case that
+	// prompted looking). Reporting the answer time as "native latency" would
+	// therefore report the number we control rather than the number the
+	// federation sees.
+	//
+	// The limiter is deliberately outside this: it is acquired by the caller
+	// before the attempt begins, and its wait is already measured by
+	// gopro_rate_limit_queue_wait_seconds. Keeping it out means the gap
+	// between this and nativeDuration is verification and nothing else.
+	nativeRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gopro_native_request_seconds",
+		Help:    "End-to-end time for a natively served request: verification plus the answer.",
+		Buckets: latencyBuckets,
+	}, []string{"endpoint"})
 )
 
 var latencyBuckets = []float64{

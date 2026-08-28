@@ -184,6 +184,14 @@ auth:
   # unreachable server cannot become a stream of outbound requests.
   key_refetch_minutes: 60
   timeout_seconds: 30
+  # How long verification of a *served* answer waits for a comparison slot.
+  #
+  # Only verification waits. A shadow comparison is dropped the instant the
+  # slots are full, because Synapse answered that request anyway. A served
+  # answer is the only check on something a remote server received, and
+  # dropping it leaves the match rate clean while the guarantee weakens --
+  # measured at canary:25, one served answer in four went unverified.
+  verify_wait_seconds: 5
 
   # Notary servers, queried before falling back to fetching a server's keys
   # from itself. These MUST match Synapse's trusted_key_servers in

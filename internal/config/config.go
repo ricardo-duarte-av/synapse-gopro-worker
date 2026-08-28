@@ -141,6 +141,9 @@ type Shadow struct {
 	// CaptureMB is how much of Synapse's response to keep for comparison. A
 	// large room's /state_ids response is several megabytes. Zero uses 32.
 	CaptureMB int `yaml:"capture_mb"`
+	// VerifyWaitSeconds is how long verification of a served answer waits for
+	// a comparison slot before giving up. Zero uses 5s.
+	VerifyWaitSeconds int `yaml:"verify_wait_seconds"`
 }
 
 // Database describes read-only access to Synapse's PostgreSQL database.

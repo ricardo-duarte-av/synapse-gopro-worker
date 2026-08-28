@@ -392,3 +392,76 @@ func TestSynthesiseRequestLeavesGetEmpty(t *testing.T) {
 		t.Errorf("body = %q, want empty", n)
 	}
 }
+
+// Verification of a served answer waits for a slot; shadow comparison does not.
+//
+// The asymmetry is the point. A shadow comparison describes a request Synapse
+// answered anyway, so dropping it costs one data point. A served answer is the
+// only check on something a remote server actually received, and dropping it
+// leaves the match rate clean while the guarantee weakens -- which is what
+// took the verified share to 0.75 at canary:25.
+func TestVerificationWaitsForASlotButShadowDoesNot(t *testing.T) {
+	r, _ := newTestRunner(t, &fakeResolver{
+		resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}},
+	}, Options{Concurrency: 1, Timeout: time.Second, VerifyWait: 2 * time.Second})
+
+	// Occupy the only slot.
+	r.sem <- struct{}{}
+
+	// Shadow comparison gives up at once.
+	before := labelled(t, "gopro_shadow_skipped_total", "reason", "busy")
+	done := make(chan struct{})
+	go func() { r.Go(req(), ProxyResult{Status: 200, Body: []byte(`{}`)}); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shadow comparison blocked; it must drop immediately when busy")
+	}
+	if labelled(t, "gopro_shadow_skipped_total", "reason", "busy") <= before {
+		t.Error("a dropped shadow comparison was not counted as busy")
+	}
+
+	// Verification waits, and proceeds once the slot frees.
+	waitedBefore := labelled(t, "gopro_shadow_verify_waited_total", "endpoint", "state_ids")
+	verified := make(chan struct{})
+	go func() {
+		r.CompareServed(req(), ProxyResult{Status: 200, Body: []byte(`{"pdu_ids":["$a"],"auth_chain_ids":[]}`)},
+			time.Millisecond, []byte(`{"pdu_ids":["$a"],"auth_chain_ids":[]}`), 200, native.Meta{})
+		close(verified)
+	}()
+
+	select {
+	case <-verified:
+		t.Fatal("verification did not wait; it returned while the slot was held")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	<-r.sem // release
+	select {
+	case <-verified:
+	case <-time.After(3 * time.Second):
+		t.Fatal("verification never acquired the freed slot")
+	}
+	if labelled(t, "gopro_shadow_verify_waited_total", "endpoint", "state_ids") <= waitedBefore {
+		t.Error("the wait was not recorded")
+	}
+}
+
+// A wait that never succeeds still sheds, rather than parking goroutines
+// without limit.
+func TestVerificationGivesUpEventually(t *testing.T) {
+	r, _ := newTestRunner(t, &fakeResolver{}, Options{
+		Concurrency: 1, Timeout: time.Second, VerifyWait: 150 * time.Millisecond})
+	r.sem <- struct{}{} // never released
+
+	before := labelled(t, "gopro_shadow_skipped_total", "reason", "busy")
+	start := time.Now()
+	r.CompareServed(req(), ProxyResult{Status: 200, Body: []byte(`{}`)},
+		time.Millisecond, []byte(`{}`), 200, native.Meta{})
+	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
+		t.Errorf("gave up after %s; it should have waited out VerifyWait", elapsed)
+	}
+	if labelled(t, "gopro_shadow_skipped_total", "reason", "busy") <= before {
+		t.Error("giving up was not counted as busy")
+	}
+}

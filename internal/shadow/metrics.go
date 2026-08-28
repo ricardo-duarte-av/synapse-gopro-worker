@@ -82,3 +82,15 @@ var canaryCompared = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name:      "canary_compared_total",
 	Help:      "Natively served answers that were compared against Synapse afterwards.",
 }, []string{"endpoint"})
+
+// verifyWaited counts verifications that found every comparison slot busy and
+// waited for one.
+//
+// A rising count is the early warning that shedding is close: the verified
+// share is still 1.0 while this climbs, and only starts falling once the wait
+// itself times out. Reading it alongside the verified share distinguishes
+// "comfortable" from "coping".
+var verifyWaited = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "gopro_shadow_verify_waited_total",
+	Help: "Verifications of a served answer that had to wait for a comparison slot.",
+}, []string{"endpoint"})

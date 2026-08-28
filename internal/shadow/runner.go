@@ -84,6 +84,10 @@ type Runner struct {
 	// timeout bounds one native computation. Shadow work is best-effort: it
 	// must never outlive its usefulness or pile up.
 	timeout time.Duration
+	// verifyWait bounds how long verification of a served answer waits for a
+	// slot. See Options.VerifyWait.
+	verifyWait time.Duration
+
 	// sem bounds concurrent native computations so that shadow work cannot
 	// exhaust the database pool that real traffic will eventually depend on.
 	sem chan struct{}
@@ -95,6 +99,15 @@ type Options struct {
 	Timeout time.Duration
 	// Concurrency bounds simultaneous native computations. Zero uses 4.
 	Concurrency int
+	// VerifyWait is how long verification of a *served* answer waits for a
+	// slot before giving up. Zero uses 5s.
+	//
+	// Only verification waits. An ordinary shadow comparison is dropped the
+	// instant the slots are full, and should be: the request it describes was
+	// answered by Synapse either way, so a dropped comparison costs one data
+	// point out of many. A served answer is not interchangeable like that --
+	// it is the only check on something a remote server actually received.
+	VerifyWait time.Duration
 }
 
 // NewRunner builds a Runner. verifier may be nil, in which case X-Matrix
@@ -106,6 +119,9 @@ func NewRunner(resolver StateIDsResolver, serverName string, verifier *fedauth.V
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 4
 	}
+	if opts.VerifyWait <= 0 {
+		opts.VerifyWait = 5 * time.Second
+	}
 	return &Runner{
 		resolver:   resolver,
 		serverName: serverName,
@@ -114,6 +130,7 @@ func NewRunner(resolver StateIDsResolver, serverName string, verifier *fedauth.V
 		log:        log,
 		timeout:    opts.Timeout,
 		sem:        make(chan struct{}, opts.Concurrency),
+		verifyWait: opts.VerifyWait,
 	}
 }
 
@@ -530,10 +547,7 @@ func (r *Runner) CompareServed(req Request, proxy ProxyResult, elapsed time.Dura
 	if r == nil {
 		return
 	}
-	select {
-	case r.sem <- struct{}{}:
-	default:
-		shadowSkipped.WithLabelValues(req.Endpoint, "busy").Inc()
+	if !r.acquireForVerification(req.Endpoint) {
 		return
 	}
 	defer func() { <-r.sem }()
@@ -591,4 +605,38 @@ func (r *Runner) upstreamRateLimited(req Request, nativeStatus int) {
 		Str("origin", req.Origin).
 		Int("native_status", nativeStatus).
 		Msg("Synapse rate limited this request; we computed an answer. Not counted as a mismatch")
+}
+
+// acquireForVerification takes a comparison slot for a served answer, waiting
+// briefly rather than giving up the moment the slots are full.
+//
+// Shadow comparison drops immediately when busy, and should: the request it
+// describes was answered by Synapse regardless. Verification of a served
+// answer is not interchangeable that way -- it is the only check on something
+// a remote server actually received, and dropping it leaves the match rate
+// looking clean while the guarantee behind it weakens. That is not
+// hypothetical: at canary:25, 75 busy skips took the verified share to 0.75,
+// so roughly one served answer in four went unchecked.
+//
+// Waiting costs nothing here. This runs after the client already has its
+// answer, on a detached context, so the only cost is a goroutine parked for a
+// moment. The wait is bounded so a persistently saturated worker still sheds
+// rather than accumulating goroutines without limit.
+func (r *Runner) acquireForVerification(endpoint string) bool {
+	select {
+	case r.sem <- struct{}{}:
+		return true
+	default:
+	}
+
+	verifyWaited.WithLabelValues(endpoint).Inc()
+	timer := time.NewTimer(r.verifyWait)
+	defer timer.Stop()
+	select {
+	case r.sem <- struct{}{}:
+		return true
+	case <-timer.C:
+		shadowSkipped.WithLabelValues(endpoint, "busy").Inc()
+		return false
+	}
 }

@@ -172,6 +172,7 @@ func run() error {
 			shadow.Options{
 				Timeout:     time.Duration(cfg.Shadow.TimeoutSeconds) * time.Second,
 				Concurrency: cfg.Shadow.Concurrency,
+				VerifyWait:  time.Duration(cfg.Shadow.VerifyWaitSeconds) * time.Second,
 			},
 		)
 		log.Info().

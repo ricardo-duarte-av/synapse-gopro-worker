@@ -17,6 +17,29 @@ import (
 //
 // The top end stays coarse on purpose: above 100ms the question is only "how
 // bad", and /state_ids on a large room can take seconds.
+// limiterWaitBuckets are placed around the sleep_delay values an operator is
+// likely to configure, rather than on a generic latency scale.
+//
+// This distribution is not a latency curve: it is bimodal, near-zero for
+// almost every request and almost exactly sleep_delay for the rest. What
+// matters is which side of that a request fell on, and how many sleeps it
+// took.
+//
+// The previous set jumped from .1 to .25, which straddled a sleep_delay of
+// 100ms exactly. Every sleep landed in that bucket and histogram_quantile
+// interpolated across it, reporting a p99 of 234ms for a value that was
+// precisely 100ms -- and the raw buckets showed all 76 sleeps in one bucket
+// with nothing sleeping twice. That is the same trap as the 1ms bucket floor
+// in the working notes: the instrument, not the thing measured.
+//
+// Boundaries sit just above the common settings (50, 100, 250, 500ms) so a
+// single sleep falls at the bottom of a bucket rather than the middle, and two
+// sleeps land in a visibly different one.
+var limiterWaitBuckets = []float64{
+	.0005, .001, .005, .01, .025, .05, .055,
+	.1, .105, .15, .25, .26, .5, .51, .75, 1, 2.5, 5, 10,
+}
+
 var latencyBuckets = []float64{
 	.0001, .00025, .0005, .00075, .001, .0015, .002, .003, .004, .005,
 	.0075, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30,
@@ -132,7 +155,7 @@ var (
 		Namespace: "gopro",
 		Name:      "rate_limit_queue_wait_seconds",
 		Help:      "Time requests spent waiting on the per-origin rate limiter.",
-		Buckets:   []float64{.001, .005, .01, .05, .1, .25, .5, 1, 2.5, 5, 10},
+		Buckets:   limiterWaitBuckets,
 	}, []string{"endpoint"})
 
 	// RateLimitedOrigins counts distinct origins limited since start, so the

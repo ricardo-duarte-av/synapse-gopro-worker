@@ -204,7 +204,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// goes wrong inside -- verification, an error, a timeout, a panic -- falls
 	// through to the proxy with nothing written, so a canary can cost latency
 	// but not correctness.
-	serveNatively := sampled(mode, eventID)
+	serveNatively := sampled(mode, samplingKey(route, eventID, reqBody))
 
 	// Rate limiting applies only to the share we answer ourselves.
 	//
@@ -520,4 +520,31 @@ func (h *Handler) shadowRequest(r *http.Request, endpoint, origin, roomID, event
 		// without it.
 		Body: reqBody,
 	}
+}
+
+// samplingKey identifies the question a request is asking, so the canary can
+// answer the same question the same way every time.
+//
+// Sampling hashes this rather than drawing at random, because a server that
+// retries must keep getting the same implementation: alternating would turn
+// any disagreement into a heisenbug. A request with no stable key does not
+// join the canary at all.
+//
+// That last rule made canary:25 a silent no-op for /get_missing_events.
+// eventIDFor reads the event_id *query parameter*, which a POST does not
+// carry, so every request produced an empty key and declined -- the endpoint
+// sat in canary mode serving nothing, indistinguishable in the metrics from
+// an endpoint whose sampling simply had not come up yet.
+//
+// The question there is the room plus the body: earliest_events,
+// latest_events and the limit. A retry sends the same bytes and lands the same
+// way, and two different questions about one room can be sampled
+// independently -- which matters because organic traffic concentrates on a
+// dozen rooms, and keying on the room alone would make the sampled share
+// all-or-nothing per room.
+func samplingKey(route Route, eventID string, reqBody []byte) string {
+	if !route.Endpoint.HasRequestBody() {
+		return eventID
+	}
+	return shadow.DecodeParam(route.Param) + "\x00" + string(reqBody)
 }

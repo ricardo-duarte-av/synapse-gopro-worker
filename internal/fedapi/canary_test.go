@@ -1195,3 +1195,58 @@ func TestShadowRequestCarriesEverythingVerificationNeeds(t *testing.T) {
 		t.Errorf("identity fields wrong: %+v", got)
 	}
 }
+
+// A POST endpoint must still get a stable sampling key.
+//
+// sampled() declines any request without one, so an endpoint whose key comes
+// out empty never joins the canary: it sits in canary mode serving nothing,
+// which in the metrics is indistinguishable from sampling that has not come up
+// yet. That is exactly what canary:25 did for /get_missing_events, whose key
+// was read from an event_id query parameter a POST does not carry.
+func TestSamplingKeyForPostEndpoints(t *testing.T) {
+	route, ok := Match("/_matrix/federation/v1/get_missing_events/%21r%3Aex.com")
+	if !ok {
+		t.Fatal("route did not match")
+	}
+	body := []byte(`{"earliest_events":["$a"],"latest_events":["$b"],"limit":10}`)
+
+	key := samplingKey(route, "", body)
+	if key == "" {
+		t.Fatal("empty sampling key: the endpoint would never join the canary")
+	}
+	// Stable: a retry sends the same bytes and must land the same way.
+	if again := samplingKey(route, "", body); again != key {
+		t.Error("sampling key is not stable across identical requests")
+	}
+	// Distinct questions about one room sample independently, so a busy room
+	// is not all-or-nothing.
+	other := samplingKey(route, "", []byte(`{"earliest_events":["$c"],"latest_events":["$b"],"limit":10}`))
+	if other == key {
+		t.Error("two different questions about the same room share a key")
+	}
+
+	// And the key actually admits requests at a non-zero percentage.
+	m := config.Mode{Kind: config.ModeCanary, CanaryPercent: 50}
+	var admitted int
+	for i := range 200 {
+		b := []byte(`{"latest_events":["$` + string(rune('a'+i%26)) + string(rune('a'+i/26)) + `"]}`)
+		if sampled(m, samplingKey(route, "", b)) {
+			admitted++
+		}
+	}
+	if admitted == 0 {
+		t.Error("no request was ever sampled; the canary is a no-op")
+	}
+	if admitted == 200 {
+		t.Error("every request was sampled; the percentage is being ignored")
+	}
+	t.Logf("  canary:50 admitted %d of 200 distinct questions", admitted)
+}
+
+// GET endpoints keep keying on the event ID.
+func TestSamplingKeyForGetEndpointsIsUnchanged(t *testing.T) {
+	route, _ := Match("/_matrix/federation/v1/event/%24abc")
+	if got := samplingKey(route, "$abc", nil); got != "$abc" {
+		t.Errorf("samplingKey = %q, want the event ID", got)
+	}
+}

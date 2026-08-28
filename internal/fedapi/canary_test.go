@@ -1113,3 +1113,58 @@ func TestLimiterWaitIsObservedOnEveryRequest(t *testing.T) {
 		t.Errorf("limiter wait observed %d times, want 1 (an undelayed request still waits zero)", got)
 	}
 }
+
+// Every routable endpoint must honour its configured mode.
+//
+// modeFor was a hand-written switch, so get_missing_events fell through to
+// proxy the moment it was added: the config said shadow, the startup line said
+// shadow, and every request ran as proxy with nothing compared. The failure was
+// silent in the only place anyone would look -- the dashboard simply had no
+// series for the endpoint, which is indistinguishable from no traffic.
+//
+// This walks the route table rather than a list written here, so an endpoint
+// added without a mode fails the test instead of quietly proxying.
+func TestEveryRoutedEndpointHonoursItsMode(t *testing.T) {
+	routes := map[Endpoint]string{
+		EndpointEvent:            "/_matrix/federation/v1/event/%24e",
+		EndpointState:            "/_matrix/federation/v1/state/%21r%3Aex.com?event_id=%24e",
+		EndpointStateIDs:         "/_matrix/federation/v1/state_ids/%21r%3Aex.com?event_id=%24e",
+		EndpointGetMissingEvents: "/_matrix/federation/v1/get_missing_events/%21r%3Aex.com",
+	}
+
+	for endpoint, path := range routes {
+		t.Run(string(endpoint), func(t *testing.T) {
+			// Configure only this endpoint to shadow; the rest stay proxy.
+			var eps config.Endpoints
+			byName := map[string]*config.Mode{
+				"event": &eps.Event, "state": &eps.State,
+				"state_ids": &eps.StateIDs, "get_missing_events": &eps.GetMissingEvents,
+			}
+			for name, m := range byName {
+				*m = config.Mode{Kind: config.ModeProxy}
+				if name == string(endpoint) {
+					*m = config.Mode{Kind: config.ModeShadow}
+				}
+			}
+			cfg := &config.Config{ServerName: "example.com", Endpoints: eps}
+			h := &Handler{cfg: cfg, modes: cfg.Endpoints.ByName()}
+
+			route, ok := Match(pathOnly(path))
+			if !ok {
+				t.Fatalf("route table does not match %q", path)
+			}
+			if got := h.modeFor(route.Endpoint); got.Kind != config.ModeShadow {
+				t.Errorf("%s configured as shadow but modeFor returned %q; "+
+					"a hand-written lookup has drifted from the config", endpoint, got.Kind)
+			}
+		})
+	}
+}
+
+// pathOnly strips a query string, which Match does not expect.
+func pathOnly(p string) string {
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		return p[:i]
+	}
+	return p
+}

@@ -27,7 +27,10 @@ import (
 // mode already threads through so that shadow and native serving can be added
 // without reshaping the request path.
 type Handler struct {
-	cfg     *config.Config
+	cfg *config.Config
+	// modes is the per-endpoint mode, resolved once from the config so a new
+	// endpoint cannot be missed by a hand-written lookup.
+	modes   map[string]config.Mode
 	proxy   *proxy.Proxy
 	shadow  *shadow.Runner
 	limiter *ratelimit.Limiter
@@ -75,6 +78,7 @@ func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.
 	}
 	h := &Handler{
 		cfg:           cfg,
+		modes:         cfg.Endpoints.ByName(),
 		proxy:         p,
 		shadow:        runner,
 		limiter:       ratelimit.New(cfg.RCFederation),
@@ -483,17 +487,22 @@ func eventIDFor(route Route, r *http.Request) string {
 	return r.URL.Query().Get("event_id")
 }
 
+// modeFor reports the configured mode for an endpoint.
+//
+// Looked up by name from the config rather than switched on, because the
+// hand-written switch silently returned proxy for get_missing_events the
+// moment it was added: the config said shadow, the startup line said shadow,
+// and every request ran as proxy with nothing being compared. A map built from
+// Endpoints.ByName cannot drift that way, since adding a field to Endpoints
+// without adding it to ByName is what would have to go wrong instead -- and
+// that is one place, not three.
 func (h *Handler) modeFor(e Endpoint) config.Mode {
-	switch e {
-	case EndpointEvent:
-		return h.cfg.Endpoints.Event
-	case EndpointState:
-		return h.cfg.Endpoints.State
-	case EndpointStateIDs:
-		return h.cfg.Endpoints.StateIDs
-	default:
-		return config.Mode{Kind: config.ModeProxy}
+	if m, ok := h.modes[string(e)]; ok {
+		return m
 	}
+	// An endpoint we route but do not configure is proxied, which is the only
+	// safe default: it serves Synapse's answer unchanged.
+	return config.Mode{Kind: config.ModeProxy}
 }
 
 // maxRequestBody bounds a buffered request body.

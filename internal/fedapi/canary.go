@@ -59,6 +59,9 @@ type nativeResult struct {
 	Spent  time.Duration
 	Status int
 	Bytes  int64
+	// Meta carries what the body cannot: currently whether a DAG walk
+	// truncated, which decides whether the answer is comparable.
+	Meta native.Meta
 }
 
 // serveNative answers a request from our own implementation.
@@ -99,7 +102,7 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 	defer cancel()
 
 	start := time.Now()
-	body, status, err := h.answer(ctx, endpoint, result.Origin, roomID, eventID, reqBody)
+	body, status, meta, err := h.answer(ctx, endpoint, result.Origin, roomID, eventID, reqBody)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -155,13 +158,14 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 	// evidence has to be gathered before promotion, because afterwards it
 	// stops arriving.
 	if mode.Kind == config.ModeCanary {
-		h.compareServed(r, endpoint, roomID, eventID, reqBody, body, status, elapsed)
+		h.compareServed(r, endpoint, roomID, eventID, reqBody, body, status, meta, elapsed)
 	}
 	spent := time.Since(attemptStart)
 	nativeRequestDuration.WithLabelValues(endpoint).Observe(spent.Seconds())
 
 	return nativeResult{
 		Served: true,
+		Meta:   meta,
 		Spent:  spent,
 		Status: status,
 		Bytes:  int64(len(body)),
@@ -173,7 +177,7 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 //
 // The request is cloned onto a detached context: the original is cancelled the
 // moment the handler returns, and this deliberately runs after that.
-func (h *Handler) compareServed(r *http.Request, endpoint, roomID, eventID string, reqBody, body []byte, status int, elapsed time.Duration) {
+func (h *Handler) compareServed(r *http.Request, endpoint, roomID, eventID string, reqBody, body []byte, status int, meta native.Meta, elapsed time.Duration) {
 	if h.shadow == nil {
 		return
 	}
@@ -197,35 +201,28 @@ func (h *Handler) compareServed(r *http.Request, endpoint, roomID, eventID strin
 		}()
 		res := h.proxy.Fetch(replay, h.captureLimit)
 		h.shadow.CompareServed(
-			shadow.Request{
-				Endpoint:   endpoint,
-				Origin:     originFromAuth(r.Header.Get("Authorization")),
-				RoomID:     roomID,
-				EventID:    eventID,
-				URI:        r.URL.RequestURI(),
-				Method:     r.Method,
-				AuthHeader: r.Header.Get("Authorization"),
-			},
+			h.shadowRequest(r, endpoint, originFromAuth(r.Header.Get("Authorization")),
+				roomID, eventID, reqBody),
 			shadow.ProxyResult{
 				Status:    res.Status,
 				Body:      res.Body,
 				Duration:  res.Duration,
 				Truncated: res.Truncated,
 			},
-			elapsed, body, status,
+			elapsed, body, status, meta,
 		)
 	}()
 }
 
 // answer computes the response, converting a panic into an error so a bug in
 // the native path falls back to the proxy rather than killing the connection.
-func (h *Handler) answer(ctx context.Context, endpoint, origin, roomID, eventID string, reqBody []byte) (body []byte, status int, err error) {
+func (h *Handler) answer(ctx context.Context, endpoint, origin, roomID, eventID string, reqBody []byte) (body []byte, status int, meta native.Meta, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			nativeFallback.WithLabelValues(endpoint, "panic").Inc()
 			h.log.Error().Interface("panic", p).Str("endpoint", endpoint).
 				Msg("Native answer panicked; falling back to Synapse")
-			body, status, err = nil, 0, errPanicked
+			body, status, meta, err = nil, 0, native.Meta{}, errPanicked
 		}
 	}()
 	return native.Answer(ctx, h.resolver, h.serverName, native.Request{

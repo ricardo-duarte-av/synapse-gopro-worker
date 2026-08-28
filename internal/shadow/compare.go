@@ -200,7 +200,7 @@ type missingEventsBody struct {
 //
 // A walk that *completed* is fully determined and is compared exactly.
 // Measured against the live server, 28 of 28 completed walks agreed.
-func CompareGetMissingEvents(requestBody, synapseBody, nativeBody []byte) (*difflog.Diff, string, error) {
+func CompareGetMissingEvents(requestBody, synapseBody, nativeBody []byte, nativeWalkTruncated bool) (*difflog.Diff, string, error) {
 	var syn, nat missingEventsBody
 	if err := json.Unmarshal(synapseBody, &syn); err != nil {
 		return nil, "", fmt.Errorf("shadow: parse synapse body: %w", err)
@@ -235,8 +235,21 @@ func CompareGetMissingEvents(requestBody, synapseBody, nativeBody []byte) (*diff
 		return nil, "", nil
 	}
 
-	// Both sides filled their budget: neither answer is the correct one.
-	if limit := missingEventsLimit(requestBody); len(syn.Events) >= limit && len(nat.Events) >= limit {
+	// Either walk stopping at the limit makes the answer ambiguous, and one
+	// truncating is enough: the two then explored the DAG to different depths
+	// and there is no single right subset to agree on.
+	//
+	// Our side reports it directly, because the response cannot show it --
+	// rejected events, unauthorised redactions and out-of-range depths are all
+	// removed after the walk, so a walk that truncated at twenty can return
+	// eighteen and look complete. That is exactly how the first version of
+	// this rule missed two real cases: it compared response sizes against the
+	// limit and the filtering had already hidden the truncation.
+	//
+	// Synapse gives us no such flag, so its side is still inferred from the
+	// response size -- which is sound in the one direction that matters: a
+	// response at the limit cannot have come from a completed walk.
+	if limit := missingEventsLimit(requestBody); nativeWalkTruncated || len(syn.Events) >= limit {
 		return nil, "walk_truncated", nil
 	}
 	return diff, "", nil

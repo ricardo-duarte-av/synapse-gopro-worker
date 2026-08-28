@@ -27,12 +27,19 @@ const MaxMissingEvents = 20
 // The `NOT is_state` predicate is kept even though every row in this
 // deployment has is_state false: the column is legacy, but dropping the
 // predicate would change behaviour on a database where it is not.
-func (s *Store) GetMissingEvents(ctx context.Context, roomID string, earliest, latest []string, limit int) ([]string, error) {
+// The bool reports that the walk stopped because it reached the limit rather
+// than because it ran out of DAG. That distinction is not visible in the
+// result: events are filtered afterwards, so a walk that truncated at 20 can
+// return 18 and look complete. It decides whether the answer is comparable at
+// all -- a truncated walk keeps whichever events the frontier happened to
+// reach first, and Synapse iterates that frontier in an order we cannot
+// reproduce.
+func (s *Store) GetMissingEvents(ctx context.Context, roomID string, earliest, latest []string, limit int) ([]string, bool, error) {
 	if limit > MaxMissingEvents {
 		limit = MaxMissingEvents
 	}
 	if limit <= 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	seen := make(map[string]bool, len(earliest))
@@ -49,27 +56,27 @@ func (s *Store) GetMissingEvents(ctx context.Context, roomID string, earliest, l
 		}
 	}
 	if len(wanted) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT event_id FROM events WHERE event_id = ANY($1) AND room_id = $2`,
 		wanted, roomID)
 	if err != nil {
-		return nil, fmt.Errorf("store: missing events start: %w", err)
+		return nil, false, fmt.Errorf("store: missing events start: %w", err)
 	}
 	var front []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("store: scan start event: %w", err)
+			return nil, false, fmt.Errorf("store: scan start event: %w", err)
 		}
 		front = append(front, id)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: missing events start rows: %w", err)
+		return nil, false, fmt.Errorf("store: missing events start rows: %w", err)
 	}
 
 	var results []string
@@ -91,7 +98,7 @@ func (s *Store) GetMissingEvents(ctx context.Context, roomID string, earliest, l
 			}
 			prev, err := s.prevEvents(ctx, eventID, roomID, limit-len(results))
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			for _, p := range prev {
 				if seen[p] {
@@ -109,7 +116,9 @@ func (s *Store) GetMissingEvents(ctx context.Context, roomID string, earliest, l
 	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
 		results[i], results[j] = results[j], results[i]
 	}
-	return results, nil
+	// Reached the budget rather than the end of the DAG.
+	truncated := len(results) >= limit
+	return results, truncated, nil
 }
 
 // prevEvents returns up to limit prev-events of eventID that are in roomID.

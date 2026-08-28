@@ -57,7 +57,7 @@ func TestLiveGetMissingEvents(t *testing.T) {
 	var agree, differ, notrunc int
 	for _, g := range targets {
 		// Walk back 4 hops ourselves to find an "earliest".
-		chain, err := s.GetMissingEvents(ctx, g.room, nil, []string{g.tip}, 4)
+		chain, _, err := s.GetMissingEvents(ctx, g.room, nil, []string{g.tip}, 4)
 		if err != nil || len(chain) == 0 {
 			continue
 		}

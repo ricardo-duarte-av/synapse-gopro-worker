@@ -171,12 +171,12 @@ func (r *Runner) run(req Request, proxy ProxyResult) {
 	if authErr != nil {
 		start := time.Now()
 		body, _ := json.Marshal(authErr)
-		r.finish(req, proxy, time.Since(start), body, authErr.Status)
+		r.finish(req, proxy, time.Since(start), body, authErr.Status, native.Meta{})
 		return
 	}
 
 	start := time.Now()
-	nativeBody, nativeStatus, err := r.compute(ctx, req, origin)
+	nativeBody, nativeStatus, meta, err := r.compute(ctx, req, origin)
 	elapsed := time.Since(start)
 
 	// Record both sides over the same set of requests, so the two are
@@ -199,11 +199,11 @@ func (r *Runner) run(req Request, proxy ProxyResult) {
 		return
 	}
 
-	r.finish(req, proxy, elapsed, nativeBody, nativeStatus)
+	r.finish(req, proxy, elapsed, nativeBody, nativeStatus, meta)
 }
 
 // finish compares a native answer against Synapse's and records the outcome.
-func (r *Runner) finish(req Request, proxy ProxyResult, elapsed time.Duration, nativeBody []byte, nativeStatus int) {
+func (r *Runner) finish(req Request, proxy ProxyResult, elapsed time.Duration, nativeBody []byte, nativeStatus int, meta native.Meta) {
 	agree, compareBodies := CompareStatus(proxy.Status, nativeStatus)
 	if !agree {
 		if nativeStatus != http.StatusUnauthorized && upstreamCouldNotFetchKeys(proxy) {
@@ -235,7 +235,7 @@ func (r *Runner) finish(req Request, proxy ProxyResult, elapsed time.Duration, n
 		return
 	}
 
-	diff, skipReason, diffErr := r.diff(req, proxy.Body, nativeBody)
+	diff, skipReason, diffErr := r.diff(req, proxy.Body, nativeBody, meta)
 	if skipReason != "" {
 		shadowSkipped.WithLabelValues(req.Endpoint, skipReason).Inc()
 		return
@@ -381,7 +381,7 @@ func (r *Runner) logAuthMismatch(req Request, proxy ProxyResult, verifiedOrigin,
 
 // compute produces our answer, using the same code the request path uses so
 // the two can never disagree about what "our answer" is.
-func (r *Runner) compute(ctx context.Context, req Request, origin string) ([]byte, int, error) {
+func (r *Runner) compute(ctx context.Context, req Request, origin string) ([]byte, int, native.Meta, error) {
 	return native.Answer(ctx, r.resolver, r.serverName, native.Request{
 		Endpoint: req.Endpoint,
 		Origin:   origin,
@@ -396,7 +396,7 @@ func (r *Runner) compute(ctx context.Context, req Request, origin string) ([]byt
 // The skip reason exists for /get_missing_events, where a walk that stopped at
 // the limit has no single correct answer. Returning it here rather than
 // letting the endpoint fake a match keeps "we agree" meaning what it says.
-func (r *Runner) diff(req Request, synapseBody, nativeBody []byte) (*difflog.Diff, string, error) {
+func (r *Runner) diff(req Request, synapseBody, nativeBody []byte, meta native.Meta) (*difflog.Diff, string, error) {
 	switch req.Endpoint {
 	case "state_ids":
 		d, err := CompareStateIDs(synapseBody, nativeBody)
@@ -405,7 +405,7 @@ func (r *Runner) diff(req Request, synapseBody, nativeBody []byte) (*difflog.Dif
 		d, err := CompareEvent(synapseBody, nativeBody)
 		return d, "", err
 	case "get_missing_events":
-		return CompareGetMissingEvents(req.Body, synapseBody, nativeBody)
+		return CompareGetMissingEvents(req.Body, synapseBody, nativeBody, meta.WalkTruncated)
 	default:
 		return nil, "", errors.New("shadow: no comparator for " + req.Endpoint)
 	}
@@ -526,7 +526,7 @@ func (r *Runner) upstreamKeyFetchFailed(req Request, proxy ProxyResult, nativeSt
 // request but no latency, and a disagreement is recorded exactly as a shadow
 // mismatch is. Dropped rather than queued when busy: falling behind must never
 // slow down serving.
-func (r *Runner) CompareServed(req Request, proxy ProxyResult, elapsed time.Duration, nativeBody []byte, nativeStatus int) {
+func (r *Runner) CompareServed(req Request, proxy ProxyResult, elapsed time.Duration, nativeBody []byte, nativeStatus int, meta native.Meta) {
 	if r == nil {
 		return
 	}
@@ -565,7 +565,7 @@ func (r *Runner) CompareServed(req Request, proxy ProxyResult, elapsed time.Dura
 	shadowDuration.WithLabelValues(req.Endpoint).Observe(elapsed.Seconds())
 	shadowUpstreamDuration.WithLabelValues(req.Endpoint).Observe(proxy.Duration.Seconds())
 
-	r.finish(req, proxy, elapsed, nativeBody, nativeStatus)
+	r.finish(req, proxy, elapsed, nativeBody, nativeStatus, meta)
 }
 
 // upstreamRateLimited records a disagreement caused by Synapse shedding load

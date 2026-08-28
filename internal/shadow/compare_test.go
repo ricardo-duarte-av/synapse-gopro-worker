@@ -1,6 +1,7 @@
 package shadow
 
 import (
+	"github.com/daedric/synapse-gopro-worker/internal/native"
 	"time"
 
 	"encoding/json"
@@ -247,7 +248,7 @@ func TestUpstreamRateLimitIsNotAMismatch(t *testing.T) {
 			r := NewRunner(nil, "example.com", nil, nil, zerolog.Nop(), Options{Concurrency: 1})
 			r.finish(Request{Endpoint: "state_ids", Origin: "noisy.example"},
 				ProxyResult{Status: tc.proxyStatus, Body: []byte(`{"errcode":"M_LIMIT_EXCEEDED"}`)},
-				time.Millisecond, []byte(`{"pdu_ids":[],"auth_chain_ids":[]}`), tc.nativeStatus)
+				time.Millisecond, []byte(`{"pdu_ids":[],"auth_chain_ids":[]}`), tc.nativeStatus, native.Meta{})
 
 			gotMismatch := counterTotal(t, "gopro_shadow_results_total") > beforeRecorded
 			gotSkip := labelled(t, "gopro_shadow_skipped_total", "reason", "upstream_rate_limited") > beforeSkip

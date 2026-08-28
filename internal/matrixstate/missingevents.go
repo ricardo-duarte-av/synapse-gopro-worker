@@ -12,6 +12,16 @@ import (
 // MissingEventsResponse is the body of a /get_missing_events answer.
 type MissingEventsResponse struct {
 	Events []json.RawMessage `json:"events"`
+
+	// WalkTruncated reports that the DAG walk stopped at the limit. Never
+	// serialised: it is a fact about how the answer was produced, not part of
+	// it, and Synapse's response carries no equivalent.
+	//
+	// It cannot be inferred from Events. Rejected events, unauthorised
+	// redactions and out-of-range depths are all removed after the walk, so a
+	// walk that truncated at twenty can return eighteen and be
+	// indistinguishable from one that simply ran out of DAG.
+	WalkTruncated bool `json:"-"`
 }
 
 // GetMissingEvents answers /get_missing_events for a remote server.
@@ -63,7 +73,7 @@ func (r *Resolver) GetMissingEvents(ctx context.Context, origin, serverName, roo
 		return nil, fmt.Errorf("partial state check: %w", err)
 	}
 
-	ids, err := r.db.GetMissingEvents(ctx, roomID, earliest, latest, limit)
+	ids, truncated, err := r.db.GetMissingEvents(ctx, roomID, earliest, latest, limit)
 	if err != nil {
 		return nil, fmt.Errorf("missing events: %w", err)
 	}
@@ -108,7 +118,7 @@ func (r *Resolver) GetMissingEvents(ctx context.Context, origin, serverName, roo
 	}
 
 	// Always an array, never null: Synapse serialises an empty list.
-	return &MissingEventsResponse{Events: out}, nil
+	return &MissingEventsResponse{Events: out, WalkTruncated: truncated}, nil
 }
 
 // missingEventBody renders one event as /get_missing_events serialises it.

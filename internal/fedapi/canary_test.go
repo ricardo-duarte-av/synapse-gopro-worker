@@ -207,7 +207,7 @@ func TestNativeAnswerContainsFailures(t *testing.T) {
 
 	t.Run("panic becomes an error", func(t *testing.T) {
 		h.resolver = &fakeResolver{panic: true}
-		body, status, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e", nil)
+		body, status, _, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e", nil)
 		if err == nil {
 			t.Fatal("a panic did not become an error, so it would escape into the HTTP server")
 		}
@@ -218,7 +218,7 @@ func TestNativeAnswerContainsFailures(t *testing.T) {
 
 	t.Run("resolver error propagates", func(t *testing.T) {
 		h.resolver = &fakeResolver{err: errors.New("db is down")}
-		if _, _, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e", nil); err == nil {
+		if _, _, _, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e", nil); err == nil {
 			t.Error("a resolver error was swallowed, so the caller would serve an empty answer")
 		}
 	})
@@ -228,7 +228,7 @@ func TestNativeAnswerContainsFailures(t *testing.T) {
 		// rather than treated as a reason to fall back.
 		h.resolver = &fakeResolver{err: &matrixstate.MatrixError{
 			Status: 403, ErrCode: "M_FORBIDDEN", Message: "Host not in room."}}
-		body, status, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e", nil)
+		body, status, _, err := h.answer(context.Background(), "state_ids", "remote.example", "!r:example.com", "$e", nil)
 		if err != nil {
 			t.Fatalf("a Matrix error was treated as a failure: %v", err)
 		}

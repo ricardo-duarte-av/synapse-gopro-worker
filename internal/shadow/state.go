@@ -10,6 +10,7 @@ import (
 
 	"github.com/daedric/synapse-gopro-worker/internal/difflog"
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
+	"github.com/daedric/synapse-gopro-worker/internal/native"
 )
 
 // StateSink digests a /state response as it streams past on its way to the
@@ -116,7 +117,7 @@ func (r *Runner) compareState(req Request, proxy ProxyResult, upstream matrixsta
 	if authErr != nil {
 		start := time.Now()
 		body, _ := json.Marshal(authErr)
-		r.finish(req, proxy, time.Since(start), body, authErr.Status)
+		r.finish(req, proxy, time.Since(start), body, authErr.Status, native.Meta{})
 		return
 	}
 
@@ -140,7 +141,7 @@ func (r *Runner) compareState(req Request, proxy ProxyResult, upstream matrixsta
 			})
 			return
 		}
-		r.finish(req, proxy, elapsed, body, status)
+		r.finish(req, proxy, elapsed, body, status, native.Meta{})
 		return
 	}
 
@@ -150,7 +151,7 @@ func (r *Runner) compareState(req Request, proxy ProxyResult, upstream matrixsta
 	if proxy.Status != http.StatusOK {
 		// We produced an answer where Synapse produced an error status. There
 		// is no body of ours to log -- it went to the client, not to memory.
-		r.finish(req, proxy, elapsed, nil, http.StatusOK)
+		r.finish(req, proxy, elapsed, nil, http.StatusOK, native.Meta{})
 		return
 	}
 

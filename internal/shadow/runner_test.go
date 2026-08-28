@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/daedric/synapse-gopro-worker/internal/native"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -309,7 +310,7 @@ func TestCompareServedRecordsBothLatencies(t *testing.T) {
 		Status:   200,
 		Body:     body,
 		Duration: 250 * time.Millisecond,
-	}, 3*time.Millisecond, body, 200)
+	}, 3*time.Millisecond, body, 200, native.Meta{})
 
 	if got := histCount(t, "gopro_shadow_duration_seconds") - beforeNative; got != 1 {
 		t.Errorf("native latency observed %d times, want 1", got)

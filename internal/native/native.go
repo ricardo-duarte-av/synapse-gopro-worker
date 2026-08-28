@@ -58,30 +58,43 @@ type MissingEventsRequest struct {
 	Limit          *int     `json:"limit"`
 }
 
+// Meta carries facts about how an answer was produced that its body cannot
+// express.
+//
+// Currently just the one, but it exists as a struct because the alternative --
+// a bare bool threaded through two call sites -- would have to be widened the
+// moment a second such fact appears, and each widening is a chance for a
+// caller to be missed.
+type Meta struct {
+	// WalkTruncated reports that /get_missing_events stopped at the limit, so
+	// its answer is one of several valid ones and cannot be compared strictly.
+	WalkTruncated bool
+}
+
 // Answer computes one response.
 //
 // The returned status is what Synapse would return, including its error
 // statuses; err is reserved for failures that mean we could not produce an
 // answer at all, which on the request path is what triggers falling back to
 // the proxy.
-func Answer(ctx context.Context, r Resolver, serverName string, request Request) (body []byte, status int, err error) {
+func Answer(ctx context.Context, r Resolver, serverName string, request Request) (body []byte, status int, meta Meta, err error) {
 	switch request.Endpoint {
 	case "state_ids":
 		resp, err := r.StateIDs(ctx, request.Origin, request.RoomID, request.EventID)
 		if err != nil {
-			return matrixError(err)
+			return matrixErrorMeta(err)
 		}
 		body, err := json.Marshal(resp)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, Meta{}, err
 		}
-		return body, http.StatusOK, nil
+		return body, http.StatusOK, Meta{}, nil
 
 	case "get_missing_events":
 		var body MissingEventsRequest
 		if len(request.Body) > 0 {
 			if err := json.Unmarshal(request.Body, &body); err != nil {
-				return matrixError(matrixstate.ErrBadJSON())
+				return matrixErrorMeta(matrixstate.ErrBadJSON())
 			}
 		}
 		limit := 10
@@ -91,31 +104,31 @@ func Answer(ctx context.Context, r Resolver, serverName string, request Request)
 		resp, err := r.GetMissingEvents(ctx, request.Origin, serverName, request.RoomID,
 			body.EarliestEvents, body.LatestEvents, limit)
 		if err != nil {
-			return matrixError(err)
+			return matrixErrorMeta(err)
 		}
 		out, err := json.Marshal(resp)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, Meta{}, err
 		}
-		return out, http.StatusOK, nil
+		return out, http.StatusOK, Meta{WalkTruncated: resp.WalkTruncated}, nil
 
 	case "event":
 		resp, err := r.Event(ctx, request.Origin, serverName, request.EventID)
 		if errors.Is(err, matrixstate.ErrEventNotFound) {
 			// Synapse answers an unknown event with 404 and an empty body,
 			// not a JSON error.
-			return nil, http.StatusNotFound, nil
+			return nil, http.StatusNotFound, Meta{}, nil
 		}
 		if err != nil {
-			return matrixError(err)
+			return matrixErrorMeta(err)
 		}
 		body, err := json.Marshal(resp)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, Meta{}, err
 		}
-		return body, http.StatusOK, nil
+		return body, http.StatusOK, Meta{}, nil
 	}
-	return nil, 0, fmt.Errorf("native: no implementation for %q", request.Endpoint)
+	return nil, 0, Meta{}, fmt.Errorf("native: no implementation for %q", request.Endpoint)
 }
 
 // matrixError turns a Matrix error into the body and status it is served with,
@@ -130,4 +143,10 @@ func matrixError(err error) ([]byte, int, error) {
 		return body, me.Status, nil
 	}
 	return nil, 0, err
+}
+
+// matrixErrorMeta is matrixError in the four-value shape Answer returns.
+func matrixErrorMeta(err error) ([]byte, int, Meta, error) {
+	body, status, internal := matrixError(err)
+	return body, status, Meta{}, internal
 }

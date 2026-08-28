@@ -73,6 +73,14 @@ func (r *Resolver) GetMissingEvents(ctx context.Context, origin, serverName, roo
 		return nil, fmt.Errorf("get events: %w", err)
 	}
 
+	// Synapse re-authorises redactions on read when allow_rejected is false,
+	// withholding any it cannot authorise. /event does not, because it passes
+	// allow_rejected=True -- the same asymmetry as rejected events.
+	withheld, err := r.db.WithheldRedactions(ctx, events)
+	if err != nil {
+		return nil, fmt.Errorf("redaction authorisation: %w", err)
+	}
+
 	now := time.Now().UnixMilli()
 	out := make([]json.RawMessage, 0, len(ids))
 	for _, id := range ids {
@@ -83,6 +91,9 @@ func (r *Resolver) GetMissingEvents(ctx context.Context, origin, serverName, roo
 		}
 		if ev.RejectedReason != "" {
 			// allow_rejected defaults to false.
+			continue
+		}
+		if withheld[id] {
 			continue
 		}
 

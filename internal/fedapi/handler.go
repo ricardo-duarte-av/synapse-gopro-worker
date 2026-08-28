@@ -381,45 +381,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// The client has its answer by this point; comparison happens afterwards
 	// and never delays a response.
-	if shadowing && !res.Canceled && res.Err == nil && sink != nil {
-		h.shadow.GoState(
-			shadow.Request{
-				Endpoint:   endpointName,
-				Origin:     origin,
-				RoomID:     roomID,
-				EventID:    eventID,
-				URI:        r.URL.RequestURI(),
-				Method:     r.Method,
-				AuthHeader: r.Header.Get("Authorization"),
-				Body:       reqBody,
-			},
-			shadow.ProxyResult{
+	shadowReq := h.shadowRequest(r, endpointName, origin, roomID, eventID, reqBody)
+
+	if shadowing && !res.Canceled && res.Err == nil {
+		if sink != nil {
+			h.shadow.GoState(shadowReq, shadow.ProxyResult{
 				Status:   res.Status,
 				Duration: res.Duration,
-			},
-			upstreamState, upstreamStateErr,
-		)
-	}
-
-	if shadowing && !res.Canceled && res.Err == nil && sink == nil {
-		h.shadow.Go(
-			shadow.Request{
-				Endpoint: string(route.Endpoint),
-				Origin:   origin,
-				RoomID:   roomIDFor(route),
-				EventID:  eventIDFor(route, r),
-				URI:      r.URL.RequestURI(),
-				Method:   r.Method,
-				// Kept so verification can be replayed off the request path.
-				AuthHeader: r.Header.Get("Authorization"),
-			},
-			shadow.ProxyResult{
+			}, upstreamState, upstreamStateErr)
+		} else {
+			h.shadow.Go(shadowReq, shadow.ProxyResult{
 				Status:    res.Status,
 				Body:      res.Body,
 				Duration:  res.Duration,
 				Truncated: res.Truncated,
-			},
-		)
+			})
+		}
 	}
 
 	endpoint := string(route.Endpoint)
@@ -520,4 +497,27 @@ func restoreBody(r *http.Request, body []byte) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
+}
+
+// shadowRequest describes a request for the comparator.
+//
+// A function rather than a literal at each call site. There were two literals,
+// and their fields drifted: the /state branch carried the request body and the
+// other did not, so every POST comparison verified an X-Matrix signature
+// against empty content and reported correct traffic as
+// we_reject_synapse_accepts -- the direction that blocks promotion.
+func (h *Handler) shadowRequest(r *http.Request, endpoint, origin, roomID, eventID string, reqBody []byte) shadow.Request {
+	return shadow.Request{
+		Endpoint: endpoint,
+		Origin:   origin,
+		RoomID:   roomID,
+		EventID:  eventID,
+		URI:      r.URL.RequestURI(),
+		Method:   r.Method,
+		// Kept so verification can be replayed off the request path.
+		AuthHeader: r.Header.Get("Authorization"),
+		// The signature covers the content, so a POST cannot be verified
+		// without it.
+		Body: reqBody,
+	}
 }

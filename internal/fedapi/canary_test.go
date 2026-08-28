@@ -1159,3 +1159,39 @@ func TestEveryRoutedEndpointHonoursItsMode(t *testing.T) {
 		})
 	}
 }
+
+// The comparator's request must carry everything verification needs.
+//
+// The X-Matrix signature covers method, URI, origin, destination and content,
+// so a shadow request missing the body cannot verify a POST. It failed as
+// we_reject_synapse_accepts -- correct, well-signed traffic reported as the
+// direction that blocks promotion -- and it survived one fix because the body
+// was threaded into the /state branch and not the other.
+func TestShadowRequestCarriesEverythingVerificationNeeds(t *testing.T) {
+	body := []byte(`{"earliest_events":[],"latest_events":["$a"],"limit":10}`)
+	r, err := http.NewRequest(http.MethodPost,
+		"http://x/_matrix/federation/v1/get_missing_events/%21r%3Aex.com", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Authorization", `X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`)
+
+	h := &Handler{}
+	got := h.shadowRequest(r, "get_missing_events", "remote.example", "!r:ex.com", "", body)
+
+	if !bytes.Equal(got.Body, body) {
+		t.Errorf("Body = %q, want %q: a POST cannot be verified without its content", got.Body, body)
+	}
+	if got.Method != http.MethodPost {
+		t.Errorf("Method = %q, want POST", got.Method)
+	}
+	if got.URI != "/_matrix/federation/v1/get_missing_events/%21r%3Aex.com" {
+		t.Errorf("URI = %q; the signature covers it byte-for-byte", got.URI)
+	}
+	if got.AuthHeader == "" {
+		t.Error("AuthHeader empty; verification cannot be replayed")
+	}
+	if got.Endpoint != "get_missing_events" || got.Origin != "remote.example" || got.RoomID != "!r:ex.com" {
+		t.Errorf("identity fields wrong: %+v", got)
+	}
+}

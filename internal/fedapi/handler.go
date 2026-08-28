@@ -238,6 +238,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			metrics.RequestsTotal.WithLabelValues(endpointName, mode.Kind, "canceled").Inc()
 			return
 		}
+		// Observed for every acquisition, not only the delayed ones.
+		//
+		// A histogram fed only when the limiter delayed a request would report
+		// a p50 of half a second and imply every request waits that long. The
+		// zero waits are what make the quantiles mean anything, and they are
+		// the overwhelming majority.
+		metrics.RateLimitQueueWait.WithLabelValues(endpointName).Observe(outcome.Wait.Seconds())
+
 		if outcome.Slept || outcome.Queued {
 			if outcome.Slept {
 				metrics.RateLimitSleptTotal.WithLabelValues(endpointName).Inc()

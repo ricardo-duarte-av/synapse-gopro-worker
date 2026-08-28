@@ -1072,3 +1072,44 @@ func (s *slowResolver) GetMissingEvents(ctx context.Context, origin, serverName,
 		return nil, ctx.Err()
 	}
 }
+
+// The limiter wait histogram must be fed on every acquisition.
+//
+// It was defined and queried by three dashboard panels but never observed, so
+// those panels could not have shown anything -- the same shape as the metrics
+// that existed without panels, inverted. Observing only the delayed requests
+// would be almost as bad: the zero waits are what stop the quantiles reporting
+// half a second as typical.
+func TestLimiterWaitIsObservedOnEveryRequest(t *testing.T) {
+	before := histogramCount(t, "gopro_rate_limit_queue_wait_seconds")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeNative},
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &fakeResolver{resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}}}
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop(),
+		WithNative(res, acceptingVerifier{}, 5*time.Second, 30*time.Second)))
+	defer front.Close()
+
+	// A single uncontended request: it waits zero, and must still be observed.
+	if status, _ := rawGet(t, front.Listener.Addr().String(),
+		"/_matrix/federation/v1/state_ids/%21r%3Aexample.com?event_id=%24evt",
+		`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`); status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+
+	if got := histogramCount(t, "gopro_rate_limit_queue_wait_seconds") - before; got != 1 {
+		t.Errorf("limiter wait observed %d times, want 1 (an undelayed request still waits zero)", got)
+	}
+}

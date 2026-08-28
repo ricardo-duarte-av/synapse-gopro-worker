@@ -1,9 +1,11 @@
 package shadow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -334,6 +336,18 @@ func synthesiseRequest(req Request) (*http.Request, error) {
 		URL:    u,
 		Header: http.Header{},
 		Body:   http.NoBody,
+	}
+	// The X-Matrix signature covers the request content, so a POST verified
+	// without its body fails every time -- and fails as
+	// we_reject_synapse_accepts, which reads as the dangerous direction while
+	// being entirely our own doing.
+	//
+	// ContentLength matters as much as Body: mautrix reads the body only when
+	// ContentLength is non-zero, so leaving it at zero verifies against empty
+	// content no matter what Body holds.
+	if len(req.Body) > 0 {
+		out.Body = io.NopCloser(bytes.NewReader(req.Body))
+		out.ContentLength = int64(len(req.Body))
 	}
 	if req.AuthHeader != "" {
 		out.Header.Set("Authorization", req.AuthHeader)

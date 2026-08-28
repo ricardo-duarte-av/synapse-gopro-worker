@@ -1,9 +1,11 @@
 package shadow
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -334,4 +336,58 @@ func (f *fakeResolver) State(ctx context.Context, w io.Writer, origin, roomID, e
 // endpoint pass without doing anything.
 func (f *fakeResolver) GetMissingEvents(ctx context.Context, origin, serverName, roomID string, earliest, latest []string, limit int) (*matrixstate.MissingEventsResponse, error) {
 	return nil, errors.New("fakeResolver: GetMissingEvents not configured")
+}
+
+// A synthesised request must carry the body, or POST verification fails.
+//
+// The X-Matrix signature covers the request content. synthesiseRequest set
+// Body to http.NoBody unconditionally, so every /get_missing_events comparison
+// reported we_reject_synapse_accepts -- the direction that reads as dangerous
+// -- for requests that were perfectly well signed.
+//
+// ContentLength is asserted separately because it is the field that actually
+// decides: mautrix reads the body only when ContentLength is non-zero, so a
+// Body set without it verifies against empty content anyway.
+func TestSynthesiseRequestCarriesTheBody(t *testing.T) {
+	body := []byte(`{"earliest_events":[],"latest_events":["$a"],"limit":10}`)
+	req := Request{
+		Endpoint: "get_missing_events",
+		Method:   http.MethodPost,
+		URI:      "/_matrix/federation/v1/get_missing_events/%21r%3Aex.com",
+		Body:     body,
+	}
+
+	out, err := synthesiseRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ContentLength != int64(len(body)) {
+		t.Errorf("ContentLength = %d, want %d: mautrix reads the body only when it is non-zero",
+			out.ContentLength, len(body))
+	}
+	got, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Errorf("body = %q, want %q", got, body)
+	}
+}
+
+// A GET has no body and must not gain one.
+func TestSynthesiseRequestLeavesGetEmpty(t *testing.T) {
+	out, err := synthesiseRequest(Request{
+		Endpoint: "event",
+		Method:   http.MethodGet,
+		URI:      "/_matrix/federation/v1/event/%24e",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ContentLength != 0 {
+		t.Errorf("ContentLength = %d, want 0", out.ContentLength)
+	}
+	if n, _ := io.ReadAll(out.Body); len(n) != 0 {
+		t.Errorf("body = %q, want empty", n)
+	}
 }

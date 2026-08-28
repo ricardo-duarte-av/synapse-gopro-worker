@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1125,46 +1126,36 @@ func TestLimiterWaitIsObservedOnEveryRequest(t *testing.T) {
 // This walks the route table rather than a list written here, so an endpoint
 // added without a mode fails the test instead of quietly proxying.
 func TestEveryRoutedEndpointHonoursItsMode(t *testing.T) {
-	routes := map[Endpoint]string{
-		EndpointEvent:            "/_matrix/federation/v1/event/%24e",
-		EndpointState:            "/_matrix/federation/v1/state/%21r%3Aex.com?event_id=%24e",
-		EndpointStateIDs:         "/_matrix/federation/v1/state_ids/%21r%3Aex.com?event_id=%24e",
-		EndpointGetMissingEvents: "/_matrix/federation/v1/get_missing_events/%21r%3Aex.com",
-	}
+	// Derived from the route table, not from a list written here. A list
+	// written here would need updating by the same person who forgot to
+	// configure the endpoint, which is the mistake this test exists to catch.
+	full := config.Endpoints{}.ByName()
 
-	for endpoint, path := range routes {
-		t.Run(string(endpoint), func(t *testing.T) {
-			// Configure only this endpoint to shadow; the rest stay proxy.
+	for _, p := range prefixes {
+		t.Run(string(p.endpoint), func(t *testing.T) {
+			if _, ok := full[string(p.endpoint)]; !ok {
+				t.Fatalf("%s is routed but has no config field; every request "+
+					"would silently proxy", p.endpoint)
+			}
+
+			// Configure only this endpoint to shadow; everything else proxies.
 			var eps config.Endpoints
-			byName := map[string]*config.Mode{
-				"event": &eps.Event, "state": &eps.State,
-				"state_ids": &eps.StateIDs, "get_missing_events": &eps.GetMissingEvents,
-			}
-			for name, m := range byName {
-				*m = config.Mode{Kind: config.ModeProxy}
-				if name == string(endpoint) {
-					*m = config.Mode{Kind: config.ModeShadow}
+			v := reflect.ValueOf(&eps).Elem()
+			typ := v.Type()
+			for i := 0; i < typ.NumField(); i++ {
+				kind := config.ModeProxy
+				if typ.Field(i).Tag.Get("yaml") == string(p.endpoint) {
+					kind = config.ModeShadow
 				}
+				v.Field(i).Set(reflect.ValueOf(config.Mode{Kind: kind}))
 			}
+
 			cfg := &config.Config{ServerName: "example.com", Endpoints: eps}
 			h := &Handler{cfg: cfg, modes: cfg.Endpoints.ByName()}
-
-			route, ok := Match(pathOnly(path))
-			if !ok {
-				t.Fatalf("route table does not match %q", path)
-			}
-			if got := h.modeFor(route.Endpoint); got.Kind != config.ModeShadow {
+			if got := h.modeFor(p.endpoint); got.Kind != config.ModeShadow {
 				t.Errorf("%s configured as shadow but modeFor returned %q; "+
-					"a hand-written lookup has drifted from the config", endpoint, got.Kind)
+					"the mode lookup has drifted from the config", p.endpoint, got.Kind)
 			}
 		})
 	}
-}
-
-// pathOnly strips a query string, which Match does not expect.
-func pathOnly(p string) string {
-	if i := strings.IndexByte(p, '?'); i >= 0 {
-		return p[:i]
-	}
-	return p
 }

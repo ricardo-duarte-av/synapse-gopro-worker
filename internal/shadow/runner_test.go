@@ -454,14 +454,14 @@ func TestVerificationGivesUpEventually(t *testing.T) {
 		Concurrency: 1, Timeout: time.Second, VerifyWait: 150 * time.Millisecond})
 	r.sem <- struct{}{} // never released
 
-	before := labelled(t, "gopro_shadow_skipped_total", "reason", "busy")
+	before := labelled(t, "gopro_shadow_skipped_total", "reason", "busy_verify")
 	start := time.Now()
 	r.CompareServed(req(), ProxyResult{Status: 200, Body: []byte(`{}`)},
 		time.Millisecond, []byte(`{}`), 200, native.Meta{})
 	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
 		t.Errorf("gave up after %s; it should have waited out VerifyWait", elapsed)
 	}
-	if labelled(t, "gopro_shadow_skipped_total", "reason", "busy") <= before {
-		t.Error("giving up was not counted as busy")
+	if labelled(t, "gopro_shadow_skipped_total", "reason", "busy_verify") <= before {
+		t.Error("giving up was not counted separately from a dropped shadow comparison")
 	}
 }

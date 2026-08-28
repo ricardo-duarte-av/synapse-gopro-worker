@@ -636,7 +636,13 @@ func (r *Runner) acquireForVerification(endpoint string) bool {
 	case r.sem <- struct{}{}:
 		return true
 	case <-timer.C:
-		shadowSkipped.WithLabelValues(endpoint, "busy").Inc()
+		// Distinct from the shadow path's "busy": that one drops a comparison
+		// of a request Synapse answered anyway, this one abandons the only
+		// check on an answer a remote server received. One label for both made
+		// the count unreadable -- 75 skips at canary:25 could have been almost
+		// entirely harmless or almost entirely not, and the verified share was
+		// the only hint which.
+		shadowSkipped.WithLabelValues(endpoint, "busy_verify").Inc()
 		return false
 	}
 }

@@ -286,7 +286,23 @@ func (h *Handler) compareStateServed(r *http.Request, endpoint, roomID, eventID 
 	if h.shadow == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.verifyTimeout)
+	// Verified on the streaming budget, not the ordinary one.
+	//
+	// verifyTimeout is shadow.timeout_seconds, 30s, chosen when Synapse's
+	// /state_ids p99 was 7.3s. Synapse needs 82s for the largest room here, so
+	// 30s cuts the replay off mid-body: the digest then fails to parse and the
+	// comparison is lost as upstream_undigestible -- for precisely the largest
+	// rooms, which are the ones most likely to disagree. Measured: one of two
+	// large rooms lost its verification exactly this way.
+	//
+	// This is the third time a budget has been reused across two contexts and
+	// inherited the wrong assumptions. The streaming budget is sized to what
+	// this endpoint actually costs on both sides.
+	budget := h.streamTimeout
+	if h.verifyTimeout > budget {
+		budget = h.verifyTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), budget)
 	replay := r.Clone(ctx)
 	replay.Body = http.NoBody
 

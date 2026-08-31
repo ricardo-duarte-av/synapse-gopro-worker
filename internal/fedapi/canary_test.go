@@ -1297,3 +1297,72 @@ func TestOnlyStateStreams(t *testing.T) {
 		t.Error("/state does not claim to stream, so it would buffer a 97MB response")
 	}
 }
+
+// A client hanging up mid-stream is not a defect and must not be reported as
+// one.
+//
+// /state responses run to a hundred megabytes and take tens of seconds, so a
+// remote server giving up part-way through is far more likely here than on any
+// other endpoint. The first version counted it as stream_aborted and logged it
+// at error -- the same conflation the working notes record for the
+// non-streaming path, where a client disconnect was reported as our timeout.
+func TestStreamedClientHangupIsNotAnAbort(t *testing.T) {
+	beforeGone := labelledCounter(t, "gopro_native_fallback_total", "reason", "client_gone")
+	beforeAbort := labelledCounter(t, "gopro_native_fallback_total", "reason", "stream_aborted")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, StateIDs: config.Mode{Kind: config.ModeProxy},
+			State: config.Mode{Kind: config.ModeNative},
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A resolver that writes a byte, then fails with the context's error --
+	// exactly what happens when the remote server hangs up mid-body.
+	res := &hangupResolver{}
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.Nop(),
+		WithNative(res, acceptingVerifier{}, 5*time.Second, 30*time.Second)))
+	defer front.Close()
+
+	conn, err := net.DialTimeout("tcp", front.Listener.Addr().String(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(conn, "GET /_matrix/federation/v1/state/%21r%3Aex?event_id=%24e HTTP/1.1\r\n"+
+		"Host: example.com\r\n"+
+		`Authorization: X-Matrix origin="n.example",destination="example.com",key="ed25519:a",sig="x"`+"\r\n"+
+		"Connection: close\r\n\r\n")
+	time.Sleep(150 * time.Millisecond)
+	conn.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) &&
+		labelledCounter(t, "gopro_native_fallback_total", "reason", "client_gone") <= beforeGone {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := labelledCounter(t, "gopro_native_fallback_total", "reason", "client_gone"); got <= beforeGone {
+		t.Errorf("a mid-stream hangup was not classified as client_gone")
+	}
+	if got := labelledCounter(t, "gopro_native_fallback_total", "reason", "stream_aborted"); got > beforeAbort {
+		t.Errorf("a mid-stream hangup was reported as stream_aborted (%v -> %v)", beforeAbort, got)
+	}
+}
+
+// hangupResolver writes a byte and then reports the context's error, which is
+// what a resolver does when the client goes away mid-body.
+type hangupResolver struct{ fakeResolver }
+
+func (h *hangupResolver) State(ctx context.Context, w io.Writer, origin, roomID, eventID string) (matrixstate.StateResult, error) {
+	if _, err := w.Write([]byte(`{"pdus":[`)); err != nil {
+		return matrixstate.StateResult{}, err
+	}
+	<-ctx.Done()
+	return matrixstate.StateResult{}, ctx.Err()
+}

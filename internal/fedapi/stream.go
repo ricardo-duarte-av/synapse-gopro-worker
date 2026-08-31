@@ -58,14 +58,30 @@ func (h *Handler) serveStreamed(w http.ResponseWriter, r *http.Request, endpoint
 
 	if err != nil {
 		if out.written {
-			// Committed. The client has a partial body and will retry; the one
-			// thing we must not do is hand the request to the proxy, which
-			// would append a second response to the first.
-			nativeFallback.WithLabelValues(endpoint, "stream_aborted").Inc()
-			h.log.Error().Err(err).
+			// Committed. The client has a partial body; the one thing we must
+			// not do is hand the request to the proxy, which would append a
+			// second response to the first.
+			//
+			// A remote server hanging up mid-stream is not a defect, and must
+			// not be reported as one. It is routine here -- a /state response
+			// runs to a hundred megabytes and takes tens of seconds, so a
+			// client giving up part-way through is far more likely than on any
+			// other endpoint. The first version counted it as stream_aborted
+			// and logged it at error, which is the same mistake the working
+			// notes record for the non-streaming path: conflating our deadline
+			// expiring with the client leaving.
+			reason := "stream_aborted"
+			ev := h.log.Error()
+			if errors.Is(ctx.Err(), context.Canceled) {
+				reason = "client_gone"
+				ev = h.log.Debug()
+			}
+			nativeFallback.WithLabelValues(endpoint, reason).Inc()
+			ev.Err(err).
 				Str("endpoint", endpoint).Str("origin", origin).Str("room_id", roomID).
+				Str("reason", reason).
 				Int64("bytes_written", out.bytes).Dur("took", elapsed).
-				Msg("Streamed answer failed after the response had begun; it cannot be retried here")
+				Msg("Streamed answer ended after the response had begun")
 			return nativeResult{Served: true, Status: http.StatusOK, Bytes: out.bytes, Spent: time.Since(attemptStart)}
 		}
 

@@ -183,7 +183,7 @@ func main() {
 	var (
 		dsn         = flag.String("dsn", "host=/var/sockets user=gopro_ro dbname=synapse-db", "read-only PostgreSQL DSN")
 		keyPath     = flag.String("key", "", "path to the homeserver signing key (required)")
-		socket      = flag.String("socket", "/var/sockets/nginx/av-gopro-worker-1.sock", "gopro-worker unix socket")
+		socket      = flag.String("socket", "/var/sockets/nginx/xx-gopro-worker-1.sock", "gopro-worker unix socket")
 		base        = flag.String("base", "", "HTTP base URL instead of the socket")
 		serverName  = flag.String("server-name", "aguiarvieira.pt", "our server name; used as request origin and destination")
 		perStratum  = flag.Int("per-stratum", 300, "events to sample from each stratum")

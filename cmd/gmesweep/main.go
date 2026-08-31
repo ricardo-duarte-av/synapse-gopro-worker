@@ -43,7 +43,7 @@ func main() {
 	var (
 		dsn        = flag.String("dsn", "host=/var/sockets user=gopro_ro dbname=synapse-db", "read-only PostgreSQL DSN")
 		keyPath    = flag.String("key", "", "path to the homeserver signing key (required)")
-		socket     = flag.String("socket", "/var/sockets/nginx/av-gopro-worker-1.sock", "gopro-worker unix socket")
+		socket     = flag.String("socket", "/var/sockets/nginx/xx-gopro-worker-1.sock", "gopro-worker unix socket")
 		serverName = flag.String("server-name", "aguiarvieira.pt", "our server name; request origin and destination")
 		depth      = flag.Int("depth", 6, "how many hops back to claim as already-held, so the walk completes")
 		limit      = flag.Int("limit", 20, "limit sent in the request body")

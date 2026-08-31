@@ -217,3 +217,75 @@ func shortDigest(b [32]byte) string {
 	}
 	return string(out)
 }
+
+// CompareStateServed checks a /state answer we already served.
+//
+// The shadow path recomputes our answer in order to compare it. This one
+// cannot and must not: the answer was streamed to the client as it was built,
+// so there is no body to hold, and recomputing would resolve the whole room a
+// second time to reach a result we already have. What is carried forward
+// instead is the digest, which is the only part a comparison needs.
+//
+// Verification is not repeated either. The request was verified on the request
+// path before anything was served -- unlike shadow mode, where the verdict is
+// recorded off the request path and never acted on.
+func (r *Runner) CompareStateServed(req Request, proxy ProxyResult, upstream matrixstate.StateResult, upstreamErr error, ours matrixstate.StateResult, elapsed time.Duration) {
+	if r == nil {
+		return
+	}
+	if !r.acquireForVerification(req.Endpoint) {
+		return
+	}
+	defer func() { <-r.sem }()
+	defer func() {
+		if p := recover(); p != nil {
+			shadowSkipped.WithLabelValues(req.Endpoint, "panic").Inc()
+			r.log.Error().Interface("panic", p).
+				Str("endpoint", req.Endpoint).Str("uri", req.URI).
+				Msg("Streamed comparison panicked")
+		}
+	}()
+
+	if upstreamErr != nil {
+		shadowSkipped.WithLabelValues(req.Endpoint, "upstream_undigestible").Inc()
+		r.log.Warn().Err(upstreamErr).
+			Str("endpoint", req.Endpoint).Str("uri", req.URI).
+			Msg("Could not digest Synapse's /state response")
+		return
+	}
+	if proxy.Status == 0 || proxy.Status == http.StatusBadGateway {
+		shadowSkipped.WithLabelValues(req.Endpoint, "upstream_unavailable").Inc()
+		return
+	}
+	if proxy.Status != http.StatusOK {
+		// We served an answer where Synapse produced an error status.
+		r.record(req, proxy, elapsed, &difflog.Record{
+			Kind:         difflog.KindStatus,
+			NativeStatus: http.StatusOK,
+		})
+		return
+	}
+
+	canaryCompared.WithLabelValues(req.Endpoint).Inc()
+	shadowDuration.WithLabelValues(req.Endpoint).Observe(elapsed.Seconds())
+	shadowUpstreamDuration.WithLabelValues(req.Endpoint).Observe(proxy.Duration.Seconds())
+
+	if ours.Agrees(upstream) {
+		r.match(req)
+		return
+	}
+
+	r.log.Warn().
+		Str("endpoint", req.Endpoint).Str("uri", req.URI).Str("origin", req.Origin).
+		Int("synapse_pdus", upstream.PDUs).Int("native_pdus", ours.PDUs).
+		Int("synapse_auth_chain", upstream.AuthChain).Int("native_auth_chain", ours.AuthChain).
+		Str("synapse_pdu_digest", shortDigest(upstream.PDUDigest)).
+		Str("native_pdu_digest", shortDigest(ours.PDUDigest)).
+		Msg("/state digests disagree on an answer we served")
+
+	r.record(req, proxy, elapsed, &difflog.Record{
+		Kind:         difflog.KindBody,
+		NativeStatus: http.StatusOK,
+		Diff:         stateDiff(ours, upstream),
+	})
+}

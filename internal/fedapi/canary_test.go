@@ -1250,3 +1250,50 @@ func TestSamplingKeyForGetEndpointsIsUnchanged(t *testing.T) {
 		t.Errorf("samplingKey = %q, want the event ID", got)
 	}
 }
+
+// A streamed answer writes nothing until it is sure of one.
+//
+// Every other endpoint builds its response in memory, so any failure can fall
+// back to the proxy. /state cannot buffer 97MB, so the guarantee is narrowed
+// rather than dropped: Resolver.State performs every check that can produce a
+// Matrix error before writing a byte, and while nothing has been written a
+// failure falls back exactly as elsewhere.
+func TestStreamedAnswerFallsBackWhenNothingWasWritten(t *testing.T) {
+	rec := httptest.NewRecorder()
+	out := &lazyResponse{w: rec}
+
+	// Nothing written yet: no status line has been sent.
+	if out.written {
+		t.Fatal("the status line was written before any body byte")
+	}
+	if rec.Code != 200 || rec.Body.Len() != 0 {
+		t.Errorf("recorder already touched: code=%d body=%d", rec.Code, rec.Body.Len())
+	}
+
+	// The first byte commits.
+	if _, err := out.Write([]byte(`{"pdus":[`)); err != nil {
+		t.Fatal(err)
+	}
+	if !out.written {
+		t.Error("writing a byte did not mark the response as committed")
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	if out.bytes != 9 {
+		t.Errorf("bytes = %d, want 9", out.bytes)
+	}
+}
+
+// Only /state streams. Marking another endpoint would send it down a path
+// whose fallback guarantee is weaker, for no reason.
+func TestOnlyStateStreams(t *testing.T) {
+	for _, e := range []Endpoint{EndpointEvent, EndpointStateIDs, EndpointGetMissingEvents} {
+		if e.Streams() {
+			t.Errorf("%s claims to stream; only /state should", e)
+		}
+	}
+	if !EndpointState.Streams() {
+		t.Error("/state does not claim to stream, so it would buffer a 97MB response")
+	}
+}

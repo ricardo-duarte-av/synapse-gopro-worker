@@ -195,7 +195,8 @@ func run() error {
 		if verifyTimeout <= 0 {
 			verifyTimeout = 30 * time.Second
 		}
-		handlerOpts = append(handlerOpts, fedapi.WithNative(resolver, verifier, nativeTimeout, verifyTimeout))
+		handlerOpts = append(handlerOpts, fedapi.WithNative(resolver, verifier, nativeTimeout, verifyTimeout),
+			fedapi.WithStreamTimeout(time.Duration(cfg.StreamTimeoutSeconds)*time.Second))
 	}
 	handler := fedapi.New(cfg, p, runner, log, handlerOpts...)
 

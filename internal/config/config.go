@@ -102,6 +102,20 @@ type Config struct {
 	// nothing and merely sets how much time can be wasted before giving up.
 	NativeTimeoutSeconds int `yaml:"native_timeout_seconds"`
 
+	// StreamTimeoutSeconds bounds a streamed native answer. Zero uses 120s.
+	//
+	// Deliberately separate from native_timeout_seconds, which is 5s. That
+	// number was chosen for /event and /state_ids, where our p99 is tens of
+	// milliseconds and a long budget only sets how much time can be wasted
+	// before giving up. /state is a different animal: the largest room here
+	// takes 27s cold and Synapse itself needs 82s, so a 5s budget would
+	// abandon every large room -- and abandon it mid-stream, after bytes have
+	// already gone to the client.
+	//
+	// It lives on Endpoints rather than beside native_timeout_seconds because
+	// it is a property of what the endpoint has to do, not of the mode.
+	StreamTimeoutSeconds int `yaml:"stream_timeout_seconds"`
+
 	// Replication consumes Synapse's cache-invalidation stream over Redis. It
 	// is what makes the caches safe against events being deleted; without it
 	// they are knowingly stale until the process restarts.

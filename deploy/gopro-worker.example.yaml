@@ -83,6 +83,17 @@ database:
 # protects nothing; it only sets how much time can be wasted before giving up.
 native_timeout_seconds: 5
 
+# How long a *streamed* native answer may take. Only /state streams.
+#
+# Deliberately separate from native_timeout_seconds. That 5s was chosen for
+# /event and /state_ids, where our p99 is tens of milliseconds and a long
+# budget only sets how much time can be wasted before giving up. /state is a
+# different animal: the largest room here takes 27s cold and Synapse itself
+# needs 82s, so a 5s budget would abandon every large room -- and abandon it
+# mid-stream, after bytes had already reached the client, where no fallback is
+# possible.
+stream_timeout_seconds: 120
+
 endpoints:
   # proxy       - forward to Synapse, return its answer (Phase 1)
   # shadow      - forward to Synapse and serve that, but also compute our own
@@ -124,8 +135,15 @@ endpoints:
   # not. It is the only place where a mistake serves private room history to a
   # server that should not see it, so it warrants the longest soak.
   event: proxy
-  # /state has no native implementation yet. It receives no traffic on this
-  # deployment anyway.
+  # /state streams its answer rather than building it in memory, because its
+  # responses reach 97MB here. That narrows the fallback guarantee: every check
+  # that can produce a Matrix error runs before the first byte, so a failure
+  # while nothing has been written falls back exactly as elsewhere -- but once
+  # bytes are on the wire we are committed, and a failure there leaves the
+  # client with a partial body to retry rather than a proxied answer.
+  #
+  # Comparison is by digest in both shadow and canary: neither side can be
+  # held in memory, so the two are streamed and compared as 32 bytes.
   state: proxy
   # state_ids has a native implementation. Shadow mode still serves Synapse's
   # answer; it only also computes our own and records any disagreement.

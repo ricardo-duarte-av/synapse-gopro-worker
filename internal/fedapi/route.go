@@ -16,6 +16,16 @@ const (
 	EndpointUnknown          Endpoint = "unknown"
 )
 
+// Streams reports that an endpoint writes its answer incrementally rather
+// than returning it whole.
+//
+// Only /state does. Its responses reach 97MB here, so buffering one to hand
+// back as a []byte would recreate the memory problem the endpoint exists to
+// solve -- and would do it on the request path, where it is worst.
+func (e Endpoint) Streams() bool {
+	return e == EndpointState
+}
+
 // HasRequestBody reports whether an endpoint's answer depends on the request
 // body, which must then be buffered so that verification, the native answer
 // and the proxy can each read it.

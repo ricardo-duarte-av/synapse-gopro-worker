@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daedric/synapse-gopro-worker/internal/config"
+	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
 	"github.com/daedric/synapse-gopro-worker/internal/native"
 	"github.com/daedric/synapse-gopro-worker/internal/shadow"
 )
@@ -62,6 +63,10 @@ type nativeResult struct {
 	// Meta carries what the body cannot: currently whether a DAG walk
 	// truncated, which decides whether the answer is comparable.
 	Meta native.Meta
+	// StateResult is set for a streamed answer. It carries the digests the
+	// verification replay is compared against, since the body itself was
+	// written to the client and never held.
+	StateResult *matrixstate.StateResult
 }
 
 // serveNative answers a request from our own implementation.
@@ -96,6 +101,18 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 	if !result.OK() {
 		nativeFallback.WithLabelValues(endpoint, "auth_rejected").Inc()
 		return nativeResult{Reason: "auth_rejected", Spent: time.Since(attemptStart)}
+	}
+
+	// A streamed endpoint takes a different path: it writes as it resolves, so
+	// it cannot use the build-then-write shape the fallback guarantee relies
+	// on. See serveStreamed for how that guarantee is narrowed rather than
+	// dropped.
+	if endpointStreams(endpoint) {
+		res := h.serveStreamed(w, r, endpoint, roomID, eventID, result.Origin, attemptStart)
+		if res.Served && mode.Kind == config.ModeCanary && res.StateResult != nil {
+			h.compareStateServed(r, endpoint, roomID, eventID, *res.StateResult, res.Spent)
+		}
+		return res
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.nativeTimeout)
@@ -252,3 +269,56 @@ func statusText(status int) string {
 		return "other"
 	}
 }
+
+// endpointStreams reports whether an endpoint writes its answer incrementally.
+func endpointStreams(endpoint string) bool {
+	return Endpoint(endpoint).Streams()
+}
+
+// compareStateServed checks a streamed answer against Synapse.
+//
+// It cannot reuse compareServed: that captures Synapse's body to diff against
+// ours, and neither body can be held here. Instead the replay is streamed
+// through a digest and compared against the digest produced while serving,
+// which is the same mechanism shadow mode uses -- the only difference being
+// that our side is already computed rather than recomputed.
+func (h *Handler) compareStateServed(r *http.Request, endpoint, roomID, eventID string, ours matrixstate.StateResult, elapsed time.Duration) {
+	if h.shadow == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.verifyTimeout)
+	replay := r.Clone(ctx)
+	replay.Body = http.NoBody
+
+	go func() {
+		defer cancel()
+		defer func() {
+			if p := recover(); p != nil {
+				h.log.Error().Interface("panic", p).Str("endpoint", endpoint).
+					Msg("Streamed comparison panicked")
+			}
+		}()
+		sink := shadow.NewStateSink()
+		res := h.proxy.ForwardStreaming(discard{}, replay, sink.Writer())
+		upstream, err := sink.Wait()
+		if res.SinkErr != nil {
+			err = res.SinkErr
+		}
+		h.shadow.CompareStateServed(
+			h.shadowRequest(r, endpoint, originFromAuth(r.Header.Get("Authorization")), roomID, eventID, nil),
+			shadow.ProxyResult{Status: res.Status, Duration: res.Duration},
+			upstream, err, ours, elapsed,
+		)
+	}()
+}
+
+// discard is a ResponseWriter that throws the body away.
+//
+// The verification replay has no client: the real one already has our answer.
+// ForwardStreaming needs somewhere to write, and for /state that somewhere
+// must not be a buffer.
+type discard struct{}
+
+func (discard) Header() http.Header         { return http.Header{} }
+func (discard) Write(p []byte) (int, error) { return len(p), nil }
+func (discard) WriteHeader(int)             {}

@@ -1,6 +1,7 @@
 package matrixstate
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 )
@@ -68,4 +69,15 @@ func ErrBadJSON() *MatrixError {
 		ErrCode: "M_NOT_JSON",
 		Message: "Content not JSON.",
 	}
+}
+
+// Response renders the error as Synapse would serve it.
+func (e *MatrixError) Response() ([]byte, int) {
+	body, err := json.Marshal(e)
+	if err != nil {
+		// The struct is two strings; this cannot fail, and an empty body with
+		// the right status is still closer to correct than a panic.
+		return nil, e.Status
+	}
+	return body, e.Status
 }

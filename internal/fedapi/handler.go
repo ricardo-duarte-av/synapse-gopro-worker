@@ -48,6 +48,11 @@ type Handler struct {
 	// request -- but the whole budget is spent *before* the proxy is asked, so
 	// the client pays this plus Synapse's own time. It must stay short.
 	nativeTimeout time.Duration
+	// streamTimeout bounds a streamed native answer. Much longer than
+	// nativeTimeout: /state takes tens of seconds on a large room, and the 5s
+	// budget chosen for /event would abandon every one of them -- mid-stream,
+	// after bytes had already reached the client.
+	streamTimeout time.Duration
 	// verifyTimeout bounds the after-the-fact fetch that checks a served
 	// answer against Synapse.
 	//
@@ -86,6 +91,7 @@ func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.
 		captureLimit:  limit,
 		serverName:    cfg.ServerName,
 		nativeTimeout: 5 * time.Second,
+		streamTimeout: 120 * time.Second,
 		verifyTimeout: 30 * time.Second,
 	}
 	for _, o := range opts {
@@ -106,6 +112,15 @@ type Verifier interface {
 
 // Option configures a Handler.
 type Option func(*Handler)
+
+// WithStreamTimeout bounds a streamed native answer.
+func WithStreamTimeout(d time.Duration) Option {
+	return func(h *Handler) {
+		if d > 0 {
+			h.streamTimeout = d
+		}
+	}
+}
 
 // WithNative supplies what canary and native modes need: our own answer, and
 // verification of who is asking. Without it those modes decline to serve and

@@ -316,3 +316,15 @@ type discardWriter struct{ header http.Header }
 func (d discardWriter) Header() http.Header         { return d.header }
 func (d discardWriter) Write(b []byte) (int, error) { return len(b), nil }
 func (d discardWriter) WriteHeader(int)             {}
+
+// Discard is a ResponseWriter for forwards that have no client.
+//
+// A verification replay and a mismatch diagnosis both re-request an answer
+// somebody already has, purely to read it. ForwardStreaming needs somewhere to
+// write, and for /state that somewhere must not be a buffer -- the response
+// reaches about 97MB.
+type Discard struct{}
+
+func (Discard) Header() http.Header         { return http.Header{} }
+func (Discard) Write(p []byte) (int, error) { return len(p), nil }
+func (Discard) WriteHeader(int)             {}

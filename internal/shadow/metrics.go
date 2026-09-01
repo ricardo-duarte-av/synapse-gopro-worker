@@ -94,3 +94,15 @@ var verifyWaited = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "gopro_shadow_verify_waited_total",
 	Help: "Verifications of a served answer that had to wait for a comparison slot.",
 }, []string{"endpoint"})
+
+// stateDiagnoses counts second-pass diagnoses of /state digest mismatches.
+//
+// The outcomes are not interchangeable. "diagnosed" means the disagreement
+// reproduced and the events are named in the log; "not_reproducible" means it
+// did not, which points at an unstable answer rather than a wrong one; and
+// "failed" means the diagnosis itself could not run, leaving the original
+// mismatch standing with only counts and digests behind it.
+var stateDiagnoses = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "gopro_state_diagnoses_total",
+	Help: "Second-pass diagnoses of /state digest mismatches, by outcome.",
+}, []string{"outcome"})

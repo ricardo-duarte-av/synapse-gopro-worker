@@ -376,37 +376,85 @@ func emitsCachePollution(body []byte) bool {
 // disagreement this comparison exists to find.
 func DigestStateResponse(r io.Reader) (StateResult, error) {
 	var res StateResult
+	var pduDigest, authDigest digestAccumulator
+
+	pdus, authChain, err := ScanStateResponse(r, func(array string, _ int, canonical []byte, _ json.RawMessage) error {
+		switch array {
+		case ArrayPDUs:
+			pduDigest.add(canonical)
+		case ArrayAuthChain:
+			authDigest.add(canonical)
+		}
+		return nil
+	})
+	res.PDUs, res.AuthChain = pdus, authChain
+	if err != nil {
+		return res, err
+	}
+
+	res.PDUDigest = pduDigest.digest()
+	res.AuthChainDigest = authDigest.digest()
+	return res, nil
+}
+
+// The two arrays a /state response carries.
+const (
+	ArrayPDUs      = "pdus"
+	ArrayAuthChain = "auth_chain"
+)
+
+// PDUVisitor receives each PDU of a /state response in stream order, both in
+// canonical form (what the digest is computed over) and as sent.
+//
+// The canonical slice is only valid for the duration of the call. Retaining it
+// is what would turn a bounded scan back into a buffered one.
+type PDUVisitor func(array string, index int, canonical []byte, raw json.RawMessage) error
+
+// ScanStateResponse streams a /state response and hands every PDU to visit.
+//
+// This is the one parser for the far side of a /state comparison; both the
+// digest and the mismatch diagnosis are expressed in terms of it. Keeping two
+// copies of this walk is how the diff-log replay drifted twice, and a
+// comparison whose two readers disagree about what they read is worse than no
+// comparison.
+//
+// Memory is bounded by the largest single PDU, not by the response, provided
+// visit does not retain what it is handed.
+//
+// The depth filter is deliberately not applied here: Synapse has already
+// applied it to what it sent, and applying it again would hide precisely the
+// disagreement this comparison exists to find.
+func ScanStateResponse(r io.Reader, visit PDUVisitor) (pdus, authChain int, err error) {
 	dec := json.NewDecoder(r)
 
 	tok, err := dec.Token()
 	if err != nil {
-		return res, fmt.Errorf("state response: %w", err)
+		return 0, 0, fmt.Errorf("state response: %w", err)
 	}
 	if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return res, fmt.Errorf("state response: expected object, got %v", tok)
+		return 0, 0, fmt.Errorf("state response: expected object, got %v", tok)
 	}
 
-	var pduDigest, authDigest digestAccumulator
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
-			return res, fmt.Errorf("state response: %w", err)
+			return pdus, authChain, fmt.Errorf("state response: %w", err)
 		}
 		key, _ := keyTok.(string)
 
 		switch key {
-		case "pdus":
-			n, err := digestArray(dec, &pduDigest)
+		case ArrayPDUs:
+			n, err := scanArray(dec, ArrayPDUs, visit)
+			pdus = n
 			if err != nil {
-				return res, fmt.Errorf("state response pdus: %w", err)
+				return pdus, authChain, fmt.Errorf("state response pdus: %w", err)
 			}
-			res.PDUs = n
-		case "auth_chain":
-			n, err := digestArray(dec, &authDigest)
+		case ArrayAuthChain:
+			n, err := scanArray(dec, ArrayAuthChain, visit)
+			authChain = n
 			if err != nil {
-				return res, fmt.Errorf("state response auth_chain: %w", err)
+				return pdus, authChain, fmt.Errorf("state response auth_chain: %w", err)
 			}
-			res.AuthChain = n
 		default:
 			// An unknown field is skipped rather than refused: Synapse may add
 			// one, and a comparison that fell over on it would be worse than
@@ -414,17 +462,14 @@ func DigestStateResponse(r io.Reader) (StateResult, error) {
 			// without buffering the rest of the response.
 			var skip json.RawMessage
 			if err := dec.Decode(&skip); err != nil {
-				return res, fmt.Errorf("state response: skip %q: %w", key, err)
+				return pdus, authChain, fmt.Errorf("state response: skip %q: %w", key, err)
 			}
 		}
 	}
 	if _, err := dec.Token(); err != nil {
-		return res, fmt.Errorf("state response: %w", err)
+		return pdus, authChain, fmt.Errorf("state response: %w", err)
 	}
-
-	res.PDUDigest = pduDigest.digest()
-	res.AuthChainDigest = authDigest.digest()
-	return res, nil
+	return pdus, authChain, nil
 }
 
 // Agrees reports whether two /state answers are the same, in both arrays.
@@ -433,9 +478,8 @@ func (s StateResult) Agrees(other StateResult) bool {
 		s.AuthChainDigest == other.AuthChainDigest
 }
 
-// digestArray folds one array of PDUs into the digest and reports how many it
-// held.
-func digestArray(dec *json.Decoder, digest *digestAccumulator) (int, error) {
+// scanArray walks one array of PDUs and reports how many it held.
+func scanArray(dec *json.Decoder, array string, visit PDUVisitor) (int, error) {
 	tok, err := dec.Token()
 	if err != nil {
 		return 0, err
@@ -454,7 +498,9 @@ func digestArray(dec *json.Decoder, digest *digestAccumulator) (int, error) {
 		if !ok {
 			return n, fmt.Errorf("unparseable pdu at index %d", n)
 		}
-		digest.add(canonical)
+		if err := visit(array, n, canonical, raw); err != nil {
+			return n, err
+		}
 		n++
 	}
 	if _, err := dec.Token(); err != nil {

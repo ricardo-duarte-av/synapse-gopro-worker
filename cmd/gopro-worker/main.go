@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -199,6 +200,36 @@ func run() error {
 			fedapi.WithStreamTimeout(time.Duration(cfg.StreamTimeoutSeconds)*time.Second))
 	}
 	handler := fedapi.New(cfg, p, runner, log, handlerOpts...)
+
+	// Enable the /state mismatch diagnosis, which needs both sides replayed.
+	//
+	// Wired here rather than in the Runner's constructor because only this
+	// scope holds both a streaming resolver and a proxy, and the Runner is
+	// deliberately ignorant of HTTP. Without it a /state mismatch still
+	// reports counts and digests; with it, the events are named.
+	if runner != nil && resolver != nil {
+		runner.SetStateReplayers(
+			func(ctx context.Context, req shadow.Request, w io.Writer) error {
+				_, err := resolver.State(ctx, w, req.Origin, req.RoomID, req.EventID)
+				return err
+			},
+			func(ctx context.Context, hr *http.Request, w io.Writer) error {
+				res := p.ForwardStreaming(proxy.Discard{}, hr, w)
+				if res.SinkErr != nil {
+					return res.SinkErr
+				}
+				if res.Err != nil {
+					return res.Err
+				}
+				if res.Status != http.StatusOK {
+					// An error body is not an answer, and scanning one would
+					// report every event as missing from Synapse's side.
+					return fmt.Errorf("upstream answered %d", res.Status)
+				}
+				return nil
+			},
+		)
+	}
 
 	// Report which endpoints the limiter actually governs. It applies only
 	// where we answer, so saying "active" while everything is proxied or

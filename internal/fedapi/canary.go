@@ -12,6 +12,7 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
 	"github.com/daedric/synapse-gopro-worker/internal/native"
+	"github.com/daedric/synapse-gopro-worker/internal/proxy"
 	"github.com/daedric/synapse-gopro-worker/internal/shadow"
 )
 
@@ -315,7 +316,7 @@ func (h *Handler) compareStateServed(r *http.Request, endpoint, roomID, eventID 
 			}
 		}()
 		sink := shadow.NewStateSink()
-		res := h.proxy.ForwardStreaming(discard{}, replay, sink.Writer())
+		res := h.proxy.ForwardStreaming(proxy.Discard{}, replay, sink.Writer())
 		upstream, err := sink.Wait()
 		if res.SinkErr != nil {
 			err = res.SinkErr
@@ -327,14 +328,3 @@ func (h *Handler) compareStateServed(r *http.Request, endpoint, roomID, eventID 
 		)
 	}()
 }
-
-// discard is a ResponseWriter that throws the body away.
-//
-// The verification replay has no client: the real one already has our answer.
-// ForwardStreaming needs somewhere to write, and for /state that somewhere
-// must not be a buffer.
-type discard struct{}
-
-func (discard) Header() http.Header         { return http.Header{} }
-func (discard) Write(p []byte) (int, error) { return len(p), nil }
-func (discard) WriteHeader(int)             {}

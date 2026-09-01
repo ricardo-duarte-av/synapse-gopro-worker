@@ -180,6 +180,11 @@ func (r *Runner) compareState(req Request, proxy ProxyResult, upstream matrixsta
 		NativeStatus: http.StatusOK,
 		Diff:         stateDiff(ours, upstream),
 	})
+
+	// The digests say two multisets differ; only a second pass can say which
+	// events. It runs off this goroutine and holds no slot -- see
+	// diagnoseStateMismatch.
+	r.diagnoseStateMismatch(req)
 }
 
 // stateDiff reports what a digest can honestly say.
@@ -288,4 +293,8 @@ func (r *Runner) CompareStateServed(req Request, proxy ProxyResult, upstream mat
 		NativeStatus: http.StatusOK,
 		Diff:         stateDiff(ours, upstream),
 	})
+
+	// This is the direction that matters most: a remote server already has the
+	// answer under suspicion, so naming the events is not a convenience.
+	r.diagnoseStateMismatch(req)
 }

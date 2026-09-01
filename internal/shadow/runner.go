@@ -91,6 +91,92 @@ type Runner struct {
 	// sem bounds concurrent native computations so that shadow work cannot
 	// exhaust the database pool that real traffic will eventually depend on.
 	sem chan struct{}
+
+	// replayNative and forwardStream reproduce the two sides of a /state
+	// answer for the mismatch diagnosis. Both nil means no diagnosis: the
+	// comparison still reports counts and digests, it just cannot name events.
+	replayNative  StateReplayer
+	forwardStream func(ctx context.Context, hr *http.Request, w io.Writer) error
+}
+
+// SetStateReplayers enables the /state mismatch diagnosis.
+//
+// It is wired separately from the constructor because only the HTTP layer owns
+// a proxy and a streaming resolver, and the Runner deliberately does not.
+func (r *Runner) SetStateReplayers(native StateReplayer, forward func(ctx context.Context, hr *http.Request, w io.Writer) error) {
+	if r == nil {
+		return
+	}
+	r.replayNative, r.forwardStream = native, forward
+}
+
+// diagnosisTimeout bounds the whole second pass.
+//
+// Four streamed responses, and Synapse needs 82s for the largest room here, so
+// this is generous by design. It runs only after something is already wrong,
+// off the request path, holding no comparison slot.
+const diagnosisTimeout = 10 * time.Minute
+
+// diagnoseStateMismatch names the events behind a /state disagreement.
+//
+// Deliberately not holding a semaphore slot. The diagnosis streams four
+// responses and can run for minutes on the largest rooms; occupying a
+// comparison slot for that long would stall the ordinary comparisons that are
+// still arriving, and those are the ones establishing whether the mismatch is
+// isolated or the start of a pattern.
+func (r *Runner) diagnoseStateMismatch(req Request) {
+	if r.replayNative == nil || r.forwardStream == nil {
+		return
+	}
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				r.log.Error().Interface("panic", p).Str("endpoint", req.Endpoint).
+					Msg("/state mismatch diagnosis panicked")
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), diagnosisTimeout)
+		defer cancel()
+
+		synapse := func(ctx context.Context, req Request, w io.Writer) error {
+			hr, err := synthesiseRequest(req)
+			if err != nil {
+				return err
+			}
+			return r.forwardStream(ctx, hr.WithContext(ctx), w)
+		}
+
+		d, err := DiagnoseStateMismatch(ctx, req, r.replayNative, synapse, 0)
+		if err != nil {
+			stateDiagnoses.WithLabelValues("failed").Inc()
+			r.log.Error().Err(err).Str("endpoint", req.Endpoint).Str("uri", req.URI).
+				Msg("Could not diagnose the /state mismatch")
+			return
+		}
+		if d.Empty() {
+			// The two passes agreed where the first comparison did not. That is
+			// worse news than a stable difference, not better: it means the
+			// answer changed between reads, so report it as its own outcome
+			// rather than as a clean bill of health.
+			stateDiagnoses.WithLabelValues("not_reproducible").Inc()
+			r.log.Warn().Str("endpoint", req.Endpoint).Str("uri", req.URI).
+				Msg("/state mismatch did not reproduce; the answer is not stable")
+			return
+		}
+
+		stateDiagnoses.WithLabelValues("diagnosed").Inc()
+		r.log.Warn().
+			Str("endpoint", req.Endpoint).Str("uri", req.URI).Str("origin", req.Origin).
+			Int("pdus_native_only", d.PDUs.NativeOnly).
+			Int("pdus_synapse_only", d.PDUs.SynapseOnly).
+			Int("auth_chain_native_only", d.AuthChain.NativeOnly).
+			Int("auth_chain_synapse_only", d.AuthChain.SynapseOnly).
+			Interface("pdus_native_samples", d.PDUs.NativeSamples).
+			Interface("pdus_synapse_samples", d.PDUs.SynapseSamples).
+			Interface("auth_chain_native_samples", d.AuthChain.NativeSamples).
+			Interface("auth_chain_synapse_samples", d.AuthChain.SynapseSamples).
+			Msg("/state mismatch diagnosed")
+	}()
 }
 
 // Options configures a Runner.

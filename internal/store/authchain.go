@@ -197,6 +197,18 @@ func (s *Store) materialiseChains(ctx context.Context, eventChains map[int64]int
 
 // authChainBatch bounds how many event IDs are queried at once during the
 // fallback walk, matching Synapse's batching.
+//
+// Synapse batches because it builds `IN (...)` SQL and cannot pass an array.
+// We can, so this looks vestigial. It is not: `ANY($1)` plans badly once the
+// array is large, and the batch size is what keeps every query in the range
+// where the planner's row estimate is right.
+//
+// Measured on !YjAUNWwLVbCthyFrkz:bonifacelabs.ca, 20,676 seed events: this
+// walk takes 865ms, while the same walk expressed as one recursive CTE over
+// the whole seed exceeds a 60s statement timeout. The plans are all index
+// scans either way -- what degrades is the estimate, not the access path.
+// Raising this constant, or collapsing the walk into a single query, is a
+// regression rather than a simplification.
 const authChainBatch = 100
 
 // GetAuthChainIDsRecursive walks event_auth breadth-first to compute an auth

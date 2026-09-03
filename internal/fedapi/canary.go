@@ -16,6 +16,10 @@ import (
 	"github.com/daedric/synapse-gopro-worker/internal/shadow"
 )
 
+// replayBudget bounds the verification replay of a streamed answer. See its
+// use below for why it is stated rather than derived from the serving budgets.
+const replayBudget = 180 * time.Second
+
 // sampled decides whether this request is one of the canary's share.
 //
 // The choice is a hash of the event ID rather than a random draw, so the same
@@ -297,9 +301,20 @@ func (h *Handler) compareStateServed(r *http.Request, endpoint, roomID, eventID 
 	// large rooms lost its verification exactly this way.
 	//
 	// This is the third time a budget has been reused across two contexts and
-	// inherited the wrong assumptions. The streaming budget is sized to what
-	// this endpoint actually costs on both sides.
-	budget := h.streamTimeout
+	// inherited the wrong assumptions, so this one is stated outright rather
+	// than borrowed.
+	//
+	// It used to be max(streamTimeout, verifyTimeout). That broke the moment
+	// streamTimeout became a slow-client backstop measured in minutes: the
+	// replay does not face a slow client at all -- it reads from Synapse over
+	// a local socket, and Synapse buffers its whole /state response before
+	// sending a byte -- so it needs only Synapse's compute time. Inheriting a
+	// 900s backstop would have been the same mistake a fourth time, and would
+	// have let a wedged Synapse hold a goroutine for a quarter of an hour.
+	//
+	// 180s is what upstream.timeout_seconds was raised to, for this exact
+	// reason: Synapse needs 82s for the largest room here.
+	budget := replayBudget
 	if h.verifyTimeout > budget {
 		budget = h.verifyTimeout
 	}

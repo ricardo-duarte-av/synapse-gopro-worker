@@ -83,16 +83,32 @@ database:
 # protects nothing; it only sets how much time can be wasted before giving up.
 native_timeout_seconds: 5
 
-# How long a *streamed* native answer may take. Only /state streams.
+# A streamed answer has two budgets, because "we are slow" and "the client is
+# slow" are different problems and only the first is ours. Only /state streams.
 #
-# Deliberately separate from native_timeout_seconds. That 5s was chosen for
-# /event and /state_ids, where our p99 is tens of milliseconds and a long
-# budget only sets how much time can be wasted before giving up. /state is a
-# different animal: the largest room here takes 27s cold and Synapse itself
+# Both are deliberately separate from native_timeout_seconds. That 5s was
+# chosen for /event and /state_ids, where our p99 is tens of milliseconds and a
+# long budget only sets how much time can be wasted before giving up. /state is
+# a different animal: the largest room here takes 27s cold and Synapse itself
 # needs 82s, so a 5s budget would abandon every large room -- and abandon it
 # mid-stream, after bytes had already reached the client, where no fallback is
 # possible.
-stream_timeout_seconds: 120
+#
+# stream_idle_timeout_seconds is the one that protects the worker: time with no
+# progress. A client that stops accepting bytes is cut after this long. A
+# client that is merely slow is left to finish, however long that takes.
+stream_idle_timeout_seconds: 60
+
+# stream_timeout_seconds is an absolute backstop against a stream that
+# progresses forever. It should never fire on a real transfer.
+#
+# It is NOT a latency budget. How long a streamed response takes is set mostly
+# by how fast the remote server drains it. Measured live on 2026-09-03, on the
+# same 18.8MB room within the same minute: one peer read at 23 KB/s, another at
+# 5.3 MB/s. This was 120s, and truncated the slow one at 3.06MB -- three such
+# truncations in thirteen days, all one peer. At 23 KB/s that room needs about
+# fourteen minutes, which is what 900 leaves room for.
+stream_timeout_seconds: 900
 
 endpoints:
   # proxy       - forward to Synapse, return its answer (Phase 1)

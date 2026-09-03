@@ -102,7 +102,8 @@ type Config struct {
 	// nothing and merely sets how much time can be wasted before giving up.
 	NativeTimeoutSeconds int `yaml:"native_timeout_seconds"`
 
-	// StreamTimeoutSeconds bounds a streamed native answer. Zero uses 120s.
+	// StreamTimeoutSeconds is the absolute backstop on a streamed native
+	// answer. Zero uses 900s.
 	//
 	// Deliberately separate from native_timeout_seconds, which is 5s. That
 	// number was chosen for /event and /state_ids, where our p99 is tens of
@@ -112,9 +113,22 @@ type Config struct {
 	// abandon every large room -- and abandon it mid-stream, after bytes have
 	// already gone to the client.
 	//
-	// It lives on Endpoints rather than beside native_timeout_seconds because
-	// it is a property of what the endpoint has to do, not of the mode.
+	// It is **not** a latency budget. A streamed response takes as long as the
+	// client takes to drain it, and that is not ours to bound: measured live,
+	// one peer read at 23 KB/s and another at 5.3 MB/s on the same room in the
+	// same minute. This used to be 120s, and truncated the slow one at 3MB of
+	// 18.8MB. Only stream_idle_timeout_seconds should ever fire in practice;
+	// this stops a stream that progresses forever.
 	StreamTimeoutSeconds int `yaml:"stream_timeout_seconds"`
+
+	// StreamIdleTimeoutSeconds bounds time *without progress* on a streamed
+	// native answer. Zero uses 60s.
+	//
+	// This is the one that protects the worker. A client that stops accepting
+	// bytes is cut after this long; a client that is merely slow is left to
+	// finish however long it takes. Raising StreamTimeoutSeconds instead only
+	// moves the truncation.
+	StreamIdleTimeoutSeconds int `yaml:"stream_idle_timeout_seconds"`
 
 	// Replication consumes Synapse's cache-invalidation stream over Redis. It
 	// is what makes the caches safe against events being deleted; without it
@@ -334,6 +348,9 @@ func (c *Config) validate() error {
 	}
 	if err := c.Database.Cache.Validate(); err != nil {
 		return err
+	}
+	if c.StreamIdleTimeoutSeconds < 0 {
+		return fmt.Errorf("stream_idle_timeout_seconds must not be negative")
 	}
 	if c.NativeTimeoutSeconds < 0 {
 		return fmt.Errorf("native_timeout_seconds must not be negative")

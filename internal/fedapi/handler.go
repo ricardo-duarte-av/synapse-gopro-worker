@@ -48,11 +48,29 @@ type Handler struct {
 	// request -- but the whole budget is spent *before* the proxy is asked, so
 	// the client pays this plus Synapse's own time. It must stay short.
 	nativeTimeout time.Duration
-	// streamTimeout bounds a streamed native answer. Much longer than
-	// nativeTimeout: /state takes tens of seconds on a large room, and the 5s
-	// budget chosen for /event would abandon every one of them -- mid-stream,
-	// after bytes had already reached the client.
+	// streamTimeout is the absolute backstop on a streamed native answer.
+	//
+	// Much longer than nativeTimeout: /state takes tens of seconds on a large
+	// room, and the 5s budget chosen for /event would abandon every one of
+	// them -- mid-stream, after bytes had already reached the client.
+	//
+	// It is deliberately *not* the latency budget. How long a streamed
+	// response takes is set mostly by how fast the client drains it, which is
+	// not ours to bound; streamIdleTimeout is what actually protects us. This
+	// only stops a stream that progresses forever, and should never bind on a
+	// real transfer.
 	streamTimeout time.Duration
+	// streamIdleTimeout bounds time *without progress* on a streamed answer.
+	//
+	// The real control. A client that stops accepting bytes is cut promptly; a
+	// client that is merely slow is left to finish. Enforced as a write
+	// deadline rather than a context, because cancelling a context does not
+	// interrupt a Write already blocked in the kernel.
+	//
+	// Generous relative to what it guards: the gap between writes is one batch
+	// of events plus, once per response, the auth-chain walk, which is
+	// sub-second even on the room that needs the recursive fallback.
+	streamIdleTimeout time.Duration
 	// verifyTimeout bounds the after-the-fact fetch that checks a served
 	// answer against Synapse.
 	//
@@ -82,17 +100,18 @@ func New(cfg *config.Config, p *proxy.Proxy, runner *shadow.Runner, log zerolog.
 		limit = 32 << 20
 	}
 	h := &Handler{
-		cfg:           cfg,
-		modes:         cfg.Endpoints.ByName(),
-		proxy:         p,
-		shadow:        runner,
-		limiter:       ratelimit.New(cfg.RCFederation),
-		log:           log,
-		captureLimit:  limit,
-		serverName:    cfg.ServerName,
-		nativeTimeout: 5 * time.Second,
-		streamTimeout: 120 * time.Second,
-		verifyTimeout: 30 * time.Second,
+		cfg:               cfg,
+		modes:             cfg.Endpoints.ByName(),
+		proxy:             p,
+		shadow:            runner,
+		limiter:           ratelimit.New(cfg.RCFederation),
+		log:               log,
+		captureLimit:      limit,
+		serverName:        cfg.ServerName,
+		nativeTimeout:     5 * time.Second,
+		streamTimeout:     900 * time.Second,
+		streamIdleTimeout: 60 * time.Second,
+		verifyTimeout:     30 * time.Second,
 	}
 	for _, o := range opts {
 		o(h)
@@ -113,11 +132,20 @@ type Verifier interface {
 // Option configures a Handler.
 type Option func(*Handler)
 
-// WithStreamTimeout bounds a streamed native answer.
+// WithStreamTimeout sets the absolute backstop on a streamed native answer.
 func WithStreamTimeout(d time.Duration) Option {
 	return func(h *Handler) {
 		if d > 0 {
 			h.streamTimeout = d
+		}
+	}
+}
+
+// WithStreamIdleTimeout bounds time without progress on a streamed answer.
+func WithStreamIdleTimeout(d time.Duration) Option {
+	return func(h *Handler) {
+		if d > 0 {
+			h.streamIdleTimeout = d
 		}
 	}
 }

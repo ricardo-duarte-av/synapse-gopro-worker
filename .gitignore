@@ -44,3 +44,8 @@ CLAUDE.md
 # Homeserver signing key — must never be committed
 *.signing.key
 signing.key
+
+# /state latency probe: results, its cron log, and its prebuilt sweeper.
+probe-results.jsonl
+probe-cron.log
+.probe-statesweep

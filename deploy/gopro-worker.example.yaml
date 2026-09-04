@@ -6,23 +6,60 @@
 
 server_name: aguiarvieira.pt
 
+# Where the worker accepts requests. Exactly one of `socket` or `addr` --
+# setting both, or neither, is a startup error rather than a silent preference.
+#
+# Plain HTTP either way. There is no TLS here by design: this sits behind
+# nginx, which terminates it.
 listen:
-  # Matches the Synapse worker convention of a unix socket in the shared
-  # /var/sockets/nginx volume.
+  # Unix socket, matching the Synapse worker convention of a socket in the
+  # shared /var/sockets/nginx volume.
   socket: /var/sockets/nginx/av-gopro-worker-1.sock
   # 0666 matches the existing Synapse worker sockets. nginx runs in a separate
   # container as a different uid, so a group-only mode would lock it out.
   socket_mode: "0666"
 
+  # TCP instead -- for a host without a shared socket volume, or when nginx
+  # lives on another machine. Comment out `socket` and `socket_mode` above.
+  #
+  #   addr: ":8090"          # all interfaces
+  #   addr: "127.0.0.1:8090" # loopback only
+  #
+  # The self-healthcheck (`-healthcheck`) understands both forms; for TCP it
+  # rewrites ":8090" and "0.0.0.0:8090" to "127.0.0.1:8090" so the probe can
+  # reach the listener from inside the container.
+
+# Where Synapse is. At least one of `sockets` or `addrs` must be set, and --
+# unlike `listen` -- the two are **additive**: every entry in both lists becomes
+# a backend, and requests are balanced round-robin across all of them. A mixed
+# socket-and-TCP fleet is a valid configuration, not a mistake.
+#
+# Plain HTTP only. The upstream URL scheme is fixed at `http`, so an upstream
+# that requires HTTPS is not supported. Keep Synapse on a loopback address, a
+# private network, or a unix socket.
 upstream:
-  # The existing Synapse federation readers. Requests are balanced round-robin.
-  # These keep running: they are both the current implementation and, later, the
-  # reference the native implementation is compared against and the fallback it
-  # returns to on error.
+  # The existing Synapse federation readers. These keep running: they are both
+  # the current implementation and, later, the reference the native
+  # implementation is compared against and the fallback it returns to on error.
   sockets:
     - /var/sockets/nginx/av-inbound-federation-worker-1.sock
     - /var/sockets/nginx/av-inbound-federation-worker-2.sock
-  timeout_seconds: 60
+
+  # TCP upstreams, on their own or alongside the sockets above:
+  #
+  #   addrs:
+  #     - "127.0.0.1:8008"
+  #     - "synapse-federation-2:8008"
+  #
+  # Main Synapse serves every federation read endpoint too, and is the better
+  # oracle once the workers are retired -- it is the reference implementation
+  # rather than a worker that merely registers the servlet. Switching to it is
+  # a change of this list and nothing else.
+
+  # 180s, not 60. Synapse buffers its whole /state response before sending a
+  # byte and needs 82s for the largest room here, so a 60s budget returned 502
+  # on precisely the rooms that matter most.
+  timeout_seconds: 180
   max_idle_conns: 64
 
 metrics:
@@ -41,6 +78,13 @@ metrics:
 # Create the role first:  psql -U synapse -d synapse-db -f deploy/readonly-role.sql
 database:
   dsn: "host=/var/sockets user=gopro_ro dbname=synapse-db"
+  # Over TCP instead -- an ordinary libpq connection string, parsed by pgx, so
+  # anything it accepts works including TLS:
+  #
+  #   dsn: "postgres://gopro_ro:pw@postgres:5432/synapse-db?sslmode=require"
+  #
+  # This is the one connection that can be encrypted; listen, upstream and
+  # replication are all plain.
   # Bounded well below Synapse's own pool so this worker cannot starve it.
   max_conns: 16
   connect_timeout_seconds: 10
@@ -203,7 +247,12 @@ endpoints:
 # costs latency, never correctness. Watch gopro_replication_connected.
 replication:
   enabled: true
-  # Unix socket path, or host:port.
+  # Unix socket path, or host:port. The transport is chosen by shape: an
+  # address beginning with "/" is dialled as a unix socket, anything else as
+  # TCP. Plain, unencrypted either way.
+  #
+  #   address: /var/sockets/keydb   # unix socket
+  #   address: "keydb:6379"         # TCP
   address: /var/sockets/keydb
   # MUST equal Synapse's server_name: the channel is named after it, and one
   # Redis can carry several homeservers' streams. Subscribing to the wrong
@@ -218,15 +267,6 @@ auth:
   # unreachable server cannot become a stream of outbound requests.
   key_refetch_minutes: 60
   timeout_seconds: 30
-  # How long verification of a *served* answer waits for a comparison slot.
-  #
-  # Only verification waits. A shadow comparison is dropped the instant the
-  # slots are full, because Synapse answered that request anyway. A served
-  # answer is the only check on something a remote server received, and
-  # dropping it leaves the match rate clean while the guarantee weakens --
-  # measured at canary:25, one served answer in four went unverified.
-  verify_wait_seconds: 5
-
   # Notary servers, queried before falling back to fetching a server's keys
   # from itself. These MUST match Synapse's trusted_key_servers in
   # homeserver.yaml: if the two lists diverge, a server Synapse can verify
@@ -285,6 +325,14 @@ shadow:
   # /state_ids response runs to several megabytes; anything past this is
   # skipped rather than compared wrongly.
   capture_mb: 32
+  # How long verification of a *served* answer waits for a comparison slot.
+  #
+  # Only verification waits. A shadow comparison is dropped the instant the
+  # slots are full, because Synapse answered that request anyway. A served
+  # answer is the only check on something a remote server received, and
+  # dropping it leaves the match rate clean while the guarantee weakens --
+  # measured at canary:25, one served answer in four went unverified.
+  verify_wait_seconds: 5
 
 log:
   level: info

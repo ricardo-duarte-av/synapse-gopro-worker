@@ -267,6 +267,57 @@ GOEXPERIMENT=jsonv2 go build ./cmd/gopro-worker
 Container images are built and published to GHCR by
 `.github/workflows/docker.yml` on every push.
 
+### Transports
+
+Every connection can be a unix socket or plain TCP. **All HTTP here is
+unencrypted by design** — the worker sits behind nginx, which terminates TLS.
+
+| | unix socket | TCP | TLS |
+| --- | :-: | :-: | :-: |
+| `listen` | yes | yes | no — terminate at nginx |
+| `upstream` → Synapse | yes | yes | **no** |
+| `replication` → Redis/KeyDB | yes | yes | no |
+| `database` → PostgreSQL | yes | yes | yes |
+
+```yaml
+listen:
+  socket: /var/sockets/nginx/av-gopro-worker-1.sock
+  socket_mode: "0666"
+  # ...or TCP. Exactly one of the two:
+  # addr: ":8090"
+
+upstream:
+  sockets: [/var/sockets/nginx/av-inbound-federation-worker-1.sock]
+  addrs:   ["127.0.0.1:8008"]      # additive, not a fallback — see below
+  timeout_seconds: 180
+
+replication:
+  address: /var/sockets/keydb      # leading "/" means unix; else host:port
+  # address: "keydb:6379"
+
+database:
+  dsn: "host=/var/sockets user=gopro_ro dbname=synapse-db"
+  # dsn: "postgres://gopro_ro:pw@postgres:5432/synapse-db?sslmode=require"
+```
+
+Four details that are not guessable from the shape of the config:
+
+- **`listen` takes exactly one** of `socket` or `addr`. Setting both, or
+  neither, is a startup error rather than a silent preference.
+- **`upstream` sockets and addrs are additive.** Every entry in both lists
+  becomes a backend and requests balance round-robin across all of them, so a
+  mixed fleet is a valid configuration rather than a mistake.
+- **`replication` picks its transport by shape**: an address starting with `/`
+  is dialled as a unix socket, anything else as TCP.
+- **PostgreSQL is the only leg that can be encrypted**, because the DSN is an
+  ordinary libpq string parsed by pgx — `sslmode` and the rest come free. The
+  HTTP legs cannot: the upstream URL scheme is fixed at `http`, so Synapse must
+  be reachable over loopback, a private network, or a socket.
+
+The unix socket path is the one this deployment uses, and it is what
+`docker-compose.yaml` and the nginx snippet in `deploy/` assume. TCP exists for
+hosts with no shared socket volume, or when nginx and Synapse are elsewhere.
+
 ### With Docker
 
 ```sh

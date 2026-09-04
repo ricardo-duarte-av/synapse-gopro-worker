@@ -250,8 +250,13 @@ type Upstream struct {
 	// Sockets are unix socket paths of Synapse federation readers. Requests are
 	// balanced across them.
 	Sockets []string `yaml:"sockets"`
-	// Addrs are TCP addresses of Synapse federation readers, used when Sockets
-	// is empty.
+	// Addrs are TCP addresses of Synapse federation readers.
+	//
+	// Additive with Sockets rather than a fallback for it: every entry in both
+	// lists becomes a backend and requests are balanced across all of them, so
+	// a mixed socket-and-TCP fleet is valid. Plain HTTP either way -- the
+	// upstream scheme is fixed at http, so an upstream requiring HTTPS is not
+	// supported.
 	Addrs []string `yaml:"addrs"`
 	// TimeoutSeconds bounds a single upstream request. Zero means 60s.
 	TimeoutSeconds int `yaml:"timeout_seconds"`

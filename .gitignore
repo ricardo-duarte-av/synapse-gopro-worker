@@ -49,3 +49,8 @@ signing.key
 probe-results.jsonl
 probe-cron.log
 .probe-statesweep
+
+# Daily per-servlet traffic snapshots (scripts/servlet-snapshot.sh) and its
+# cron output. Deployment data, not code.
+servlet-snapshots.jsonl
+servlet-snapshot-cron.log

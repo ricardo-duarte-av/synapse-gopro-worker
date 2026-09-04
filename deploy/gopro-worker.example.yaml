@@ -4,7 +4,7 @@
 # transparent insertion: nginx points at the worker, the worker points at the
 # Synapse workers it replaced in the routing chain.
 
-server_name: aguiarvieira.pt
+server_name: matrix.org
 
 # Where the worker accepts requests. Exactly one of `socket` or `addr` --
 # setting both, or neither, is a startup error rather than a silent preference.
@@ -14,7 +14,7 @@ server_name: aguiarvieira.pt
 listen:
   # Unix socket, matching the Synapse worker convention of a socket in the
   # shared /var/sockets/nginx volume.
-  socket: /var/sockets/nginx/av-gopro-worker-1.sock
+  socket: /var/sockets/federation-go-worker.sock
   # 0666 matches the existing Synapse worker sockets. nginx runs in a separate
   # container as a different uid, so a group-only mode would lock it out.
   socket_mode: "0666"
@@ -42,9 +42,7 @@ upstream:
   # the current implementation and, later, the reference the native
   # implementation is compared against and the fallback it returns to on error.
   sockets:
-    - /var/sockets/nginx/av-inbound-federation-worker-1.sock
-    - /var/sockets/nginx/av-inbound-federation-worker-2.sock
-
+    - /var/sockets/main-synapse.sock
   # TCP upstreams, on their own or alongside the sockets above:
   #
   #   addrs:
@@ -258,7 +256,7 @@ replication:
   # Redis can carry several homeservers' streams. Subscribing to the wrong
   # channel looks perfectly healthy and never invalidates anything.
   # Defaults to server_name above if omitted.
-  channel: example.com
+  channel: matrix.org
   # password: ""
   # db: 0
 
@@ -283,7 +281,7 @@ auth:
     - t2bot.io
     - element.io
     - beeper.com
-    - keys.aguiarvieira.pt
+
 
 # Per-origin federation rate limiting.
 #

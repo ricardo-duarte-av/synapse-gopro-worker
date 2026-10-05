@@ -1,8 +1,10 @@
 # Synapse GoPro Worker configuration.
 #
-# Phase 1 forwards every request to a Synapse federation reader, so this is a
-# transparent insertion: nginx points at the worker, the worker points at the
-# Synapse workers it replaced in the routing chain.
+# nginx points at the worker, and the worker points at Synapse. Every endpoint
+# below starts at `proxy`, which forwards each request unchanged -- a
+# transparent insertion. Move each one up the ladder (shadow -> canary:N ->
+# native) only once the evidence at the previous step is clean; see the
+# `endpoints` block and the README.
 
 server_name: matrix.org
 
@@ -153,9 +155,9 @@ stream_idle_timeout_seconds: 60
 stream_timeout_seconds: 900
 
 endpoints:
-  # proxy       - forward to Synapse, return its answer (Phase 1)
+  # proxy       - forward to Synapse, return its answer
   # shadow      - forward to Synapse and serve that, but also compute our own
-  #               answer and compare (Phase 2)
+  #               answer and compare
   # canary:N    - serve our own answer for N% of requests, falling back to
   #               Synapse for the rest and for anything that goes wrong
   # native      - serve our own answer, falling back to the proxy on error,

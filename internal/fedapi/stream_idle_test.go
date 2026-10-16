@@ -99,8 +99,15 @@ func TestSlowButProgressingClientIsNotTruncated(t *testing.T) {
 	// That is the whole point: it must measure time *without progress*, not
 	// elapsed time, so a deadline that is set once rather than pushed forward
 	// on every write fails here.
+	//
+	// It was 300ms, and that flaked on CI (2026-09-04, 2026-10-16, both
+	// truncated near the end). Refreshes are throttled to idle/4, so the real
+	// window without a refresh can be as short as 3/4 of the budget -- 225ms,
+	// which a scheduling stall on a shared runner under -race can exceed while
+	// the client is in fact reading. 1s leaves that margin; the drain below is
+	// slowed so the transfer still takes over three times the budget.
 	addr := streamFrontend(t, &bulkResolver{chunks: chunks, size: size},
-		WithStreamTimeout(30*time.Second), WithStreamIdleTimeout(300*time.Millisecond))
+		WithStreamTimeout(30*time.Second), WithStreamIdleTimeout(time.Second))
 
 	conn := request(t, addr)
 	defer conn.Close()
@@ -110,8 +117,9 @@ func TestSlowButProgressingClientIsNotTruncated(t *testing.T) {
 		t.Fatalf("read response head: %v", err)
 	}
 
-	// Drain at roughly 1MB/s, well under the rate the resolver can produce, so
-	// the server spends most of the transfer blocked on the client.
+	// Drain at roughly 1.2MB/s -- about 3.3s for the whole body, well under the
+	// rate the resolver can produce -- so the server spends most of the
+	// transfer blocked on the client.
 	got := 0
 	buf := make([]byte, 32*1024)
 	for got < chunks*size {
@@ -121,7 +129,7 @@ func TestSlowButProgressingClientIsNotTruncated(t *testing.T) {
 		if err != nil {
 			t.Fatalf("body truncated after %d of %d bytes: %v", got, chunks*size, err)
 		}
-		time.Sleep(8 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	if got < chunks*size {
 		t.Errorf("got %d bytes, want %d", got, chunks*size)

@@ -103,11 +103,16 @@ database:
   # resolving its 145k-event state took 1.04s cold and 2us warm.
   #
   # Set a field to -1 to disable that cache; 0 takes the default.
+  #
+  # state_groups and auth_chains were raised on 2026-10-16 (512 -> 768, 64 -> 256)
+  # after a fan-out burst of 327 servers filled both: auth_chains was already at
+  # its cap going in, so answers were being evicted while the same room was
+  # still being asked about.
   cache:
-    state_groups_mb: 512
+    state_groups_mb: 768
     events_mb: 128
     event_state_groups_mb: 32
-    auth_chains_mb: 64
+    auth_chains_mb: 256
     # Filtered state, keyed by state group and filter. /event asks only for the
     # history visibility and sometimes one server's memberships; those answers
     # are a few entries each and as immutable as the whole map they come from.

@@ -26,6 +26,8 @@ type Resolver struct {
 	// and deny entry, which measured at ~0.9ms per request — the single
 	// largest cost in /state_ids, and all of it recomputing the same thing.
 	acls *cache.LRU[string, *ServerACL]
+	// stateIDs collapses identical /state_ids computations in flight.
+	stateIDs *stateIDsFlight
 }
 
 // NewResolver builds a Resolver over the given store.
@@ -33,7 +35,8 @@ func NewResolver(db *store.Store) *Resolver {
 	return &Resolver{
 		db: db,
 		// ACLs are small and rooms are few; this is generous.
-		acls: cache.NewLRU[string, *ServerACL]("server_acls", cache.MB(8), sizeOfACL),
+		acls:     cache.NewLRU[string, *ServerACL]("server_acls", cache.MB(8), sizeOfACL),
+		stateIDs: &stateIDsFlight{timeout: stateIDsComputeTimeout},
 	}
 }
 
@@ -52,6 +55,15 @@ func (r *Resolver) StateIDs(ctx context.Context, origin, roomID, eventID string)
 		return nil, err
 	}
 
+	// Everything past the access check is the same for every origin, so
+	// concurrent requests for one event share a single computation.
+	return r.stateIDs.do(ctx, roomID+"\x00"+eventID, func(ctx context.Context) (*StateIDsResponse, error) {
+		return r.computeStateIDs(ctx, roomID, eventID)
+	})
+}
+
+// computeStateIDs resolves the state before an event and its auth chain.
+func (r *Resolver) computeStateIDs(ctx context.Context, roomID, eventID string) (*StateIDsResponse, error) {
 	stateIDs, err := r.stateIDsForEvent(ctx, roomID, eventID)
 	if err != nil {
 		return nil, err

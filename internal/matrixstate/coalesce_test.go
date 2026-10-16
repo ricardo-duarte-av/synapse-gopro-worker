@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
 )
 
 func testFlight() *stateIDsFlight {
@@ -172,5 +174,36 @@ func TestStateIDsFlightDoesNotMemoise(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("computed %d times, want 2", calls.Load())
+	}
+}
+
+// A request that waited on another's computation says so in its trace, and
+// the leader's trace -- reached through the detached context -- records the
+// computation's own lookups.
+func TestStateIDsFlightMarksJoined(t *testing.T) {
+	f := testFlight()
+	release := make(chan struct{})
+	fn := func(ctx context.Context) (*StateIDsResponse, error) {
+		cache.Record(ctx, "state_groups", false)
+		<-release
+		return &StateIDsResponse{}, nil
+	}
+	leaderCtx, leader := cache.WithTrace(context.Background())
+	followerCtx, follower := cache.WithTrace(context.Background())
+
+	done := make(chan struct{})
+	go func() { _, _ = f.do(leaderCtx, "k", fn); close(done) }()
+	time.Sleep(20 * time.Millisecond)
+	go func() { time.Sleep(20 * time.Millisecond); close(release) }()
+	if _, err := f.do(followerCtx, "k", fn); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+
+	if got := follower.Summary(); got != "joined" {
+		t.Errorf("follower: %q, want joined", got)
+	}
+	if got := leader.Summary(); got != "miss" {
+		t.Errorf("leader: %q, want miss -- the computation's lookups belong to it", got)
 	}
 }

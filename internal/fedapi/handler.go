@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/fedauth"
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
@@ -327,7 +328,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// it describes what happened to *this* request; under canary the
 			// proxied share still logs the configured mode, which makes the
 			// two shares greppable apart.
-			h.log.Info().
+			withCache(withRoom(h.log.Info(), nat.RoomID), nat.Cache).
 				Str("endpoint", endpointName).
 				Str("param", route.Param).
 				Str("mode", config.ModeNative).
@@ -464,7 +465,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// worth seeing at debug level, not as noise in the request log.
 		ev = h.log.Debug()
 	}
-	ev.
+	withRoom(ev, roomIDFor(route)).
 		Str("endpoint", endpoint).
 		Str("param", route.Param).
 		Str("mode", mode.String()).
@@ -488,6 +489,31 @@ func statusLabel(res proxy.Result) string {
 		return "none"
 	}
 	return strconv.Itoa(res.Status)
+}
+
+// withRoom adds the decoded room ID to a log line, or nothing when it is not
+// known -- a proxied /event never learns its room, and an empty field would
+// read as a request about no room.
+func withRoom(ev *zerolog.Event, roomID string) *zerolog.Event {
+	if roomID == "" {
+		return ev
+	}
+	return ev.Str("room_id", roomID)
+}
+
+// withCache adds whether the answer came from memory: cache is the summary
+// (hit, miss, partial, joined) and cache_detail the per-cache hits/lookups.
+// Omitted when nothing cacheable was looked up, as on a proxied request.
+func withCache(ev *zerolog.Event, t *cache.Trace) *zerolog.Event {
+	s := t.Summary()
+	if s == "" {
+		return ev
+	}
+	ev = ev.Str("cache", s)
+	if d := t.Detail(); d != "" {
+		ev = ev.Str("cache_detail", d)
+	}
+	return ev
 }
 
 // roomIDFor returns the decoded room ID for the endpoints that take one.

@@ -35,7 +35,9 @@ func (s *Store) GetAuthChainIDs(ctx context.Context, roomID string, eventIDs []s
 	// The auth chain is a pure function of immutable events, so it is keyed by
 	// a hash of the input set.
 	key := cache.AuthChainKey(roomID, eventIDs)
-	if ids, ok := s.caches.authChains.Get(key); ok {
+	ids, ok := s.caches.authChains.Get(key)
+	cache.Record(ctx, "auth_chains", ok)
+	if ok {
 		return ids, nil
 	}
 

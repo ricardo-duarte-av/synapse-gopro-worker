@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
 )
 
 // stateIDsComputeTimeout bounds one shared /state_ids computation.
@@ -66,6 +68,7 @@ func (f *stateIDsFlight) do(ctx context.Context, key string, fn func(context.Con
 			stateIDsFlights.WithLabelValues("computed").Inc()
 		} else {
 			stateIDsFlights.WithLabelValues("joined").Inc()
+			cache.MarkJoined(ctx)
 		}
 		if res.Err != nil {
 			return nil, res.Err

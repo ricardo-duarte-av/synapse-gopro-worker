@@ -1,6 +1,8 @@
 package store
 
 import (
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
+
 	"context"
 	"errors"
 	"fmt"
@@ -20,7 +22,9 @@ type StateKey struct {
 // GetStateGroupForEvent returns the state group at an event.
 func (s *Store) GetStateGroupForEvent(ctx context.Context, eventID string) (int64, error) {
 	// An event's state group never changes once assigned.
-	if g, ok := s.caches.eventStateGroup.Get(eventID); ok {
+	g, ok := s.caches.eventStateGroup.Get(eventID)
+	cache.Record(ctx, "event_state_groups", ok)
+	if ok {
 		return g, nil
 	}
 
@@ -78,8 +82,10 @@ func (s *Store) GetStateForGroup(ctx context.Context, group int64) (map[StateKey
 	// A state group's contents are fixed once written, so this needs no
 	// invalidation and is the single most valuable thing to cache: resolving
 	// state is by far the most expensive read we perform.
-	if state, ok := s.caches.stateGroups.Get(group); ok {
-		return state, nil
+	cached, ok := s.caches.stateGroups.Get(group)
+	cache.Record(ctx, "state_groups", ok)
+	if ok {
+		return cached, nil
 	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
@@ -182,12 +188,16 @@ func (s *Store) cachedFilteredState(
 ) (map[StateKey]string, error) {
 	if state, ok := s.caches.filteredState.Get(key); ok {
 		storeMetrics().filteredState.WithLabelValues(kind, "filtered_cache").Inc()
+		cache.Record(ctx, "filtered_state", true)
 		return copyState(state), nil
 	}
 	if whole, ok := s.caches.stateGroups.Get(key.Group); ok {
 		filtered := fromWholeMap(whole)
 		s.caches.filteredState.Add(key, filtered)
 		storeMetrics().filteredState.WithLabelValues(kind, "state_cache").Inc()
+		// Answered from memory, by the whole map rather than the filtered
+		// entry -- a hit as far as the request is concerned.
+		cache.Record(ctx, "filtered_state", true)
 		return copyState(filtered), nil
 	}
 
@@ -197,6 +207,7 @@ func (s *Store) cachedFilteredState(
 	}
 	s.caches.filteredState.Add(key, filtered)
 	storeMetrics().filteredState.WithLabelValues(kind, "database").Inc()
+	cache.Record(ctx, "filtered_state", false)
 	return copyState(filtered), nil
 }
 

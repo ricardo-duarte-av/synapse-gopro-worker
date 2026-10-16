@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
 	"github.com/daedric/synapse-gopro-worker/internal/native"
 	"github.com/daedric/synapse-gopro-worker/internal/proxy"
 	"github.com/daedric/synapse-gopro-worker/internal/shadow"
+	"github.com/tidwall/gjson"
 )
 
 // replayBudget bounds the verification replay of a streamed answer. See its
@@ -65,6 +67,11 @@ type nativeResult struct {
 	Spent  time.Duration
 	Status int
 	Bytes  int64
+	// RoomID is the room the answer was about, for the request log. /event
+	// names only an event in its URL, so for it this is read from the answer.
+	RoomID string
+	// Cache records which cacheable lookups were answered from memory.
+	Cache *cache.Trace
 	// Meta carries what the body cannot: currently whether a DAG walk
 	// truncated, which decides whether the answer is comparable.
 	Meta native.Meta
@@ -86,6 +93,13 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 		return nativeResult{Reason: "no_resolver"}
 	}
 	attemptStart := time.Now()
+
+	// Every lookup made on this request's behalf records into the trace,
+	// through the context, so the request log can say whether the answer came
+	// from memory. Attached to the request itself so the streamed path, which
+	// derives its own context from it, is traced too.
+	traceCtx, trace := cache.WithTrace(r.Context())
+	r = r.WithContext(traceCtx)
 
 	// Verification happens on the real request here, not on a replay. A canary
 	// answer is served, so an unverified origin would be reading room state it
@@ -114,6 +128,8 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 	// dropped.
 	if endpointStreams(endpoint) {
 		res := h.serveStreamed(w, r, endpoint, roomID, eventID, result.Origin, attemptStart)
+		res.RoomID = roomID
+		res.Cache = trace
 		if res.Served && mode.Kind == config.ModeCanary && res.StateResult != nil {
 			h.compareStateServed(r, endpoint, roomID, eventID, *res.StateResult, res.Spent)
 		}
@@ -146,7 +162,7 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 			// Not a defect: nobody is left to answer.
 			ev = h.log.Debug()
 		}
-		ev.Err(err).
+		withCache(withRoom(ev.Err(err), roomID), trace).
 			Str("endpoint", endpoint).Str("origin", result.Origin).
 			Str("reason", reason).
 			Dur("took", elapsed).
@@ -191,6 +207,8 @@ func (h *Handler) serveNative(w http.ResponseWriter, r *http.Request, mode confi
 		Spent:  spent,
 		Status: status,
 		Bytes:  int64(len(body)),
+		RoomID: answeredRoom(roomID, status, body),
+		Cache:  trace,
 	}
 }
 
@@ -342,4 +360,17 @@ func (h *Handler) compareStateServed(r *http.Request, endpoint, roomID, eventID 
 			upstream, err, ours, elapsed,
 		)
 	}()
+}
+
+// answeredRoom names the room a served answer was about.
+//
+// The state endpoints carry the room in their URL. /event does not, so its
+// room is read from the PDU we served. An error answer carries no PDU, and a
+// room version 12 m.room.create has no room_id at all; both log without one
+// rather than with a guess.
+func answeredRoom(roomID string, status int, body []byte) string {
+	if roomID != "" || status != http.StatusOK {
+		return roomID
+	}
+	return gjson.GetBytes(body, "pdus.0.room_id").String()
 }

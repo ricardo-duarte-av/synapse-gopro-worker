@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
 	"github.com/daedric/synapse-gopro-worker/internal/config"
 	"github.com/daedric/synapse-gopro-worker/internal/fedauth"
 	"github.com/daedric/synapse-gopro-worker/internal/matrixstate"
@@ -108,6 +109,11 @@ type fakeResolver struct {
 	// /state is not configured, and State then fails rather than silently
 	// returning an empty result a test could mistake for agreement.
 	stateBody string
+	// eventResp is what Event answers; nil answers with err.
+	eventResp *matrixstate.TransactionResponse
+	// lookups, if set, runs against the request context the way the store
+	// would, so tests can see what the trace carries to the log.
+	lookups func(ctx context.Context)
 }
 
 func (f *fakeResolver) StateIDs(ctx context.Context, origin, roomID, eventID string) (*matrixstate.StateIDsResponse, error) {
@@ -115,11 +121,17 @@ func (f *fakeResolver) StateIDs(ctx context.Context, origin, roomID, eventID str
 	if f.panic {
 		panic("boom")
 	}
+	if f.lookups != nil {
+		f.lookups(ctx)
+	}
 	return f.resp, f.err
 }
 
 func (f *fakeResolver) Event(ctx context.Context, origin, serverName, eventID string) (*matrixstate.TransactionResponse, error) {
 	f.calls++
+	if f.eventResp != nil {
+		return f.eventResp, nil
+	}
 	return nil, f.err
 }
 
@@ -743,6 +755,7 @@ func nativelyServedRequestIsLogged(t *testing.T, endpointMode config.Mode) {
 		"endpoint": "state_ids",
 		"status":   "200",
 		"origin":   "remote.example",
+		"room_id":  "!r:example.com",
 	} {
 		if got := entry[field]; got != want {
 			t.Errorf("%s = %v, want %v", field, got, want)
@@ -1365,4 +1378,147 @@ func (h *hangupResolver) State(ctx context.Context, w io.Writer, origin, roomID,
 	}
 	<-ctx.Done()
 	return matrixstate.StateResult{}, ctx.Err()
+}
+
+// requestLogLine waits for the request log line and returns it decoded. The
+// response can reach the client before the handler logs, so it polls.
+func requestLogLine(t *testing.T, logs *safeBuf) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, l := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			var d map[string]any
+			if json.Unmarshal([]byte(l), &d) == nil && d["message"] == "Served federation request" {
+				return d
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no request log line; got:\n%s", logs.String())
+	return nil
+}
+
+// /event names only an event in its URL, so the room in its log line has to
+// come from the answer. Without it, "which room was being fetched" -- the
+// first question during the 2026-10-16 fan-out -- is answerable for every
+// endpoint except the one carrying 93% of the traffic.
+func TestNativeEventLogsRoomFromAnswer(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be contacted in native mode")
+	}))
+	defer upstream.Close()
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeNative}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeProxy},
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &fakeResolver{eventResp: &matrixstate.TransactionResponse{
+		Origin: "example.com",
+		PDUs:   []json.RawMessage{json.RawMessage(`{"room_id":"!room:example.com","type":"m.room.message"}`)},
+	}}
+	var logs safeBuf
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.New(&logs),
+		WithNative(res, acceptingVerifier{}, 5*time.Second, 30*time.Second)))
+	defer front.Close()
+
+	status, _ := rawGet(t, front.Listener.Addr().String(), "/_matrix/federation/v1/event/%24evt",
+		`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 served natively", status)
+	}
+	if got := requestLogLine(t, &logs)["room_id"]; got != "!room:example.com" {
+		t.Errorf("room_id = %v, want !room:example.com", got)
+	}
+}
+
+// A proxied request logs its room decoded, and a proxied /event -- which never
+// learns its room -- logs none rather than an empty one.
+func TestProxiedRequestLogsRoom(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeProxy},
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ path, want string }{
+		{"/_matrix/federation/v1/state_ids/%21r%3Aexample.com?event_id=%24evt", "!r:example.com"},
+		{"/_matrix/federation/v1/event/%24evt", ""},
+	} {
+		var logs safeBuf
+		front := httptest.NewServer(New(cfg, p, nil, zerolog.New(&logs)))
+		rawGet(t, front.Listener.Addr().String(), tc.path,
+			`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`)
+		entry := requestLogLine(t, &logs)
+		front.Close()
+		got, present := entry["room_id"]
+		switch {
+		case tc.want == "" && present:
+			t.Errorf("%s: room_id = %v, want the field omitted", tc.path, got)
+		case tc.want != "" && got != tc.want:
+			t.Errorf("%s: room_id = %v, want %s", tc.path, got, tc.want)
+		}
+	}
+}
+
+// The request log says whether a served answer came from memory. The lookups
+// happen deep in the store, so what this checks is the plumbing: the trace
+// must reach the resolver through the request context and come back out on
+// the log line.
+func TestNativeRequestLogsCacheOutcome(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be contacted in native mode")
+	}))
+	defer upstream.Close()
+	cfg := &config.Config{
+		ServerName: "example.com",
+		Endpoints: config.Endpoints{
+			Event: config.Mode{Kind: config.ModeProxy}, State: config.Mode{Kind: config.ModeProxy},
+			StateIDs: config.Mode{Kind: config.ModeNative},
+		},
+	}
+	p, err := proxy.New(config.Upstream{Addrs: []string{strings.TrimPrefix(upstream.URL, "http://")}}, zerolog.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &fakeResolver{
+		resp: &matrixstate.StateIDsResponse{PDUIDs: []string{"$a"}},
+		lookups: func(ctx context.Context) {
+			cache.Record(ctx, "state_groups", true)
+			cache.Record(ctx, "auth_chains", false)
+		},
+	}
+	var logs safeBuf
+	front := httptest.NewServer(New(cfg, p, nil, zerolog.New(&logs),
+		WithNative(res, acceptingVerifier{}, 5*time.Second, 30*time.Second)))
+	defer front.Close()
+
+	status, _ := rawGet(t, front.Listener.Addr().String(),
+		"/_matrix/federation/v1/state_ids/%21r%3Aexample.com?event_id=%24evt",
+		`X-Matrix origin="remote.example",destination="example.com",key="ed25519:a",sig="ZZ"`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 served natively", status)
+	}
+	entry := requestLogLine(t, &logs)
+	if got := entry["cache"]; got != "partial" {
+		t.Errorf("cache = %v, want partial", got)
+	}
+	if got := entry["cache_detail"]; got != "auth_chains=0/1 state_groups=1/1" {
+		t.Errorf("cache_detail = %v", got)
+	}
 }

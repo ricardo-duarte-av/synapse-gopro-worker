@@ -1,6 +1,8 @@
 package store
 
 import (
+	"github.com/daedric/synapse-gopro-worker/internal/cache"
+
 	"context"
 	"errors"
 	"fmt"
@@ -120,9 +122,10 @@ func (s *Store) getEventsRawOpt(ctx context.Context, eventIDs []string, populate
 			}
 			missing = append(missing, id)
 		}
-		if len(missing) == 0 {
-			return out, nil
-		}
+	}
+	cache.RecordN(ctx, "events", len(eventIDs)-len(missing), len(eventIDs))
+	if len(missing) == 0 {
+		return out, nil
 	}
 
 	rows, err := s.pool.Query(ctx, eventQuery, missing)
